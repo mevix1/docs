@@ -1,0 +1,34 @@
+name: MEV-818 expand verified scaffold readback
+
+on:
+  push:
+    branches:
+      - transport/mev-818-rn0871-probe-20260925
+    paths:
+      - .github/workflows/mev-818-expand-scaffold.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  expand:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand already verified source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=probe-results/mev-818-rn0871
+          rm -rf "$ROOT/scaffold"
+          mkdir -p "$ROOT/scaffold"
+          base64 -d "$ROOT/scaffold-android-source.tar.gz.b64" > /tmp/scaffold.tar.gz
+          tar -xzf /tmp/scaffold.tar.gz -C "$ROOT/scaffold"
+          find "$ROOT/scaffold" -type f -print0 | sort -z | xargs -0 sha256sum > "$ROOT/scaffold/SHA256SUMS"
+          git config user.name "mevix-probe-bot"
+          git config user.email "mevix-probe-bot@users.noreply.github.com"
+          git add "$ROOT/scaffold"
+          git commit -m "evidence: expand verified MEV-818 scaffold source"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
