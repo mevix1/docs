@@ -7,6 +7,7 @@ on:
     paths:
       - .github/scripts/mev-1253-lock-security.sh
       - .github/workflows/mev-1253-lock-security.yml
+      - security/mev-1253-lock-pairs.tsv
   workflow_dispatch:
 
 permissions:
@@ -29,7 +30,7 @@ jobs:
         with:
           node-version: 22.16.0
 
-      - name: Execute read-only lock-bound scans
+      - name: Execute read-only lock-bound scan
         id: scan
         shell: bash
         run: |
@@ -63,7 +64,9 @@ jobs:
           print(json.dumps(r,indent=2,sort_keys=True))
           assert r['authority']['dependabotAuthority'] is False
           assert r['authority']['canCloseMEV1253'] is False
+          assert r['authority']['canApproveRelease'] is False
           assert r['boundaries']['lockChanged'] is False
+          assert r['boundaries']['npmAuditRun'] is False
           assert r['boundaries']['npmAuditFixRun'] is False
-          raise SystemExit(0 if r['status']=='PASS_LOCK_BOUND_AUXILIARY_SECURITY_READBACK' else 1)
+          raise SystemExit(0 if r['status']=='PASS_LOCK_BOUND_AUXILIARY_OSV_READBACK' else 1)
           PY
