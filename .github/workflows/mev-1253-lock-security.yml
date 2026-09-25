@@ -1,0 +1,69 @@
+name: MEV-1253 exact-candidate auxiliary security readback
+
+on:
+  push:
+    branches:
+      - audit/mev-1253-lock-security-20260925
+    paths:
+      - .github/scripts/mev-1253-lock-security.sh
+      - .github/workflows/mev-1253-lock-security.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mev-1253-lock-security-readback
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout audit carrier
+        uses: actions/checkout@v4
+
+      - name: Set up exact Node line
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+
+      - name: Execute read-only lock-bound scans
+        id: scan
+        shell: bash
+        run: |
+          set +e
+          bash .github/scripts/mev-1253-lock-security.sh
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish auxiliary security evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-1253-lock-bound-security-readback
+          path: out/mev-1253-security
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 7
+
+      - name: Enforce execution verdict without promoting security authority
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('out/mev-1253-security/RESULT.json')
+          if not p.is_file():
+              raise SystemExit('RESULT_MISSING')
+          r=json.loads(p.read_text())
+          print(json.dumps(r,indent=2,sort_keys=True))
+          assert r['authority']['dependabotAuthority'] is False
+          assert r['authority']['canCloseMEV1253'] is False
+          assert r['boundaries']['lockChanged'] is False
+          assert r['boundaries']['npmAuditFixRun'] is False
+          raise SystemExit(0 if r['status']=='PASS_LOCK_BOUND_AUXILIARY_SECURITY_READBACK' else 1)
+          PY
