@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/mev-818-product-build.yml
       - .github/scripts/mev-818-product-build.sh
+      - .github/scripts/mev-818-terminal-guard.sh
       - transport/mev-818-ui-native-source.tgz.b64
   workflow_dispatch:
 
@@ -59,22 +60,27 @@ jobs:
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
-      - name: Execute converged exact source build and record all contours
+      - name: Prepare converged exact source and first build contour
         shell: bash
         run: bash .github/scripts/mev-818-product-build.sh
 
-      - name: Publish immutable evidence
+      - name: Enforce terminal single-source qualification
+        shell: bash
+        run: bash .github/scripts/mev-818-terminal-guard.sh
+
+      - name: Publish immutable terminal evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mev-818-converged-product-build
+          name: mev-818-terminal-single-source-build
           path: |
             out/MEV-818-converged-product-build.zip
             out/mev-818-converged/RESULT.json
             out/mev-818-converged/SHA256SUMS
-            out/mev-818-converged/NativeNeutralApp-debug.apk
-            out/mev-818-converged/MEV-818-converged-source.bundle
-            out/mev-818-converged/MEV-818-converged-source.tar.gz
+            out/mev-818-converged/NativeNeutralApp-terminal-debug.apk
+            out/mev-818-converged/terminal-index.android.bundle
+            out/mev-818-converged/MEV-818-terminal-source.bundle
+            out/mev-818-converged/MEV-818-terminal-source.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
@@ -87,5 +93,5 @@ jobs:
           import json
           result = json.load(open('out/mev-818-converged/RESULT.json'))
           print(json.dumps(result, indent=2, sort_keys=True))
-          raise SystemExit(0 if result['status'] == 'PASS_MEV_818_CONVERGED_ANDROID_BUILD' else 1)
+          raise SystemExit(0 if result['status'] == 'PASS_MEV_818_TERMINAL_SINGLE_SOURCE_BUILD' else 1)
           PY
