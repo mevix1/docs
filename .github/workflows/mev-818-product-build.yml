@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: mev-818-product-build
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
