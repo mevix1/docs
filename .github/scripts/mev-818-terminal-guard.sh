@@ -9,6 +9,8 @@ LIBPKG="$LIBRARY/packages/ui-native"
 APP="$CANDIDATE/NativeNeutralApp"
 OUT="$ROOT/out/mev-818-converged"
 RECOVERY="$WORK/terminal-recovery"
+LIBPACK="$CANDIDATE/library-pack"
+PACKED_NAME="ui-foundation-ui-native-0.1.0.tgz"
 
 mkdir -p "$OUT"
 
@@ -26,11 +28,58 @@ write_exit() {
   printf '%s\n' "$2" >"$OUT/$1.exit"
 }
 
+# Freeze a packed local package and its npm-generated lock before terminal
+# qualification. The later qualification is a fresh npm ci on the committed state.
+set +e
+(
+  set -euo pipefail
+  test -d "$CANDIDATE/.git"
+  test -f "$LIBPKG/package.json"
+  test -f "$APP/package.json"
+  rm -rf "$LIBPACK"
+  mkdir -p "$LIBPACK"
+  PACKED_ACTUAL="$(cd "$LIBPKG" && npm pack --ignore-scripts --pack-destination "$LIBPACK" | tail -1)"
+  test "$PACKED_ACTUAL" = "$PACKED_NAME"
+  test -f "$LIBPACK/$PACKED_NAME"
+  python3 - "$APP" "$PACKED_NAME" <<'PY_PREP'
+import json
+import pathlib
+import sys
+
+app = pathlib.Path(sys.argv[1])
+packed = sys.argv[2]
+manifest_path = app / 'package.json'
+manifest = json.loads(manifest_path.read_text())
+manifest.setdefault('dependencies', {})['@ui-foundation/ui-native'] = f'file:../library-pack/{packed}'
+manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+
+tsconfig_path = app / 'tsconfig.json'
+tsconfig = json.loads(tsconfig_path.read_text())
+exclude = list(tsconfig.get('exclude', []))
+if 'mev818-tests' not in exclude:
+    exclude.append('mev818-tests')
+tsconfig['exclude'] = exclude
+tsconfig_path.write_text(json.dumps(tsconfig, indent=2) + '\n')
+PY_PREP
+  rm -rf "$APP/node_modules" "$LIBPKG/node_modules"
+  (cd "$APP" && npm install --ignore-scripts --audit=false --fund=false)
+  git -C "$CANDIDATE" add -A
+  if ! git -C "$CANDIDATE" diff --cached --quiet; then
+    GIT_AUTHOR_DATE='2026-09-25T17:34:00Z' GIT_COMMITTER_DATE='2026-09-25T17:34:00Z' \
+      git -C "$CANDIDATE" commit -q -m 'fix(native): freeze packed ui-native dependency for Metro'
+  fi
+) >"$OUT/terminal-preparation.stdout.log" 2>"$OUT/terminal-preparation.stderr.log"
+PREPARATION_EXIT=$?
+set -e
+printf '%s\n' "$PREPARATION_EXIT" >"$OUT/terminal-preparation.exit"
+
 required_paths=(
   "$CANDIDATE/.git"
   "$APP/package.json"
   "$APP/package-lock.json"
+  "$APP/tsconfig.json"
   "$LIBPKG/package.json"
+  "$LIBPACK/$PACKED_NAME"
   "$LIBPKG/src/android/index.ts"
   "$APP/mev818-tests/contract.test.ts"
 )
@@ -49,6 +98,7 @@ else
     cd '$CANDIDATE'
     git rev-parse HEAD > '$OUT/terminal-source-commit'
     git rev-parse 'HEAD^{tree}' > '$OUT/terminal-source-tree'
+    git rev-parse HEAD^ > '$OUT/terminal-source-parent' 2>/dev/null || printf 'ROOT_SNAPSHOT\n' > '$OUT/terminal-source-parent'
     git status --short > '$OUT/terminal-source-status-before.txt'
     test ! -s '$OUT/terminal-source-status-before.txt'
     git ls-files -s > '$OUT/terminal-tracked-index.tsv'
@@ -68,7 +118,9 @@ out = pathlib.Path(sys.argv[2])
 paths = [
     'NativeNeutralApp/package.json',
     'NativeNeutralApp/package-lock.json',
+    'NativeNeutralApp/tsconfig.json',
     'library/packages/ui-native/package.json',
+    'library-pack/ui-foundation-ui-native-0.1.0.tgz',
     'library/packages/ui-native/MEV-818-LIBRARY-REPAIR.json',
     'MEV-818-CANDIDATE.json',
 ]
@@ -86,11 +138,12 @@ for rel in paths:
 
 lock = json.loads((root / 'NativeNeutralApp/package-lock.json').read_text())
 packages = lock.get('packages', {})
+local = packages.get('node_modules/@ui-foundation/ui-native', {})
 checks = {
     'reactNative': packages.get('node_modules/react-native', {}).get('version') == '0.87.1',
     'react': packages.get('node_modules/react', {}).get('version') == '19.2.3',
     'typescript': packages.get('node_modules/typescript', {}).get('version') == '6.0.3',
-    'localLibrary': packages.get('node_modules/@ui-foundation/ui-native', {}).get('link') is True,
+    'localLibrary': local.get('version') == '0.1.0' and str(local.get('resolved', '')).endswith('ui-foundation-ui-native-0.1.0.tgz'),
 }
 if not all(checks.values()):
     raise SystemExit('LOCK_DEPENDENCY_IDENTITY:' + json.dumps(checks, sort_keys=True))
@@ -123,7 +176,7 @@ if (receipt.reactNative?.version !== '0.87.1') throw new Error(`RN_VERSION:${rec
 if (receipt.react?.version !== '19.2.3') throw new Error(`REACT_VERSION:${receipt.react?.version}`);
 if (receipt.typescript?.version !== '6.0.3') throw new Error(`TS_VERSION:${receipt.typescript?.version}`);
 if (!String(receipt.reactNative?.resolved).includes('registry.npmjs.org/react-native/-/react-native-0.87.1.tgz')) throw new Error(`RN_ORIGIN:${receipt.reactNative?.resolved}`);
-if (receipt.uiNative?.link !== true) throw new Error('LOCAL_UI_NATIVE_NOT_LINKED');
+if (receipt.uiNative?.version !== '0.1.0' || !String(receipt.uiNative?.resolved || '').endsWith('ui-foundation-ui-native-0.1.0.tgz')) throw new Error(`LOCAL_UI_NATIVE_TARBALL:${receipt.uiNative?.version}:${receipt.uiNative?.resolved}`);
 fs.writeFileSync(path.join(out, 'terminal-dependency-receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
 console.log(JSON.stringify(receipt, null, 2));
 NODE
@@ -209,7 +262,8 @@ PY
     test \"\$(git -C '$RECOVERY/repo' rev-parse 'HEAD^{tree}')\" = \"\$(cat '$OUT/terminal-source-tree')\"
     git -C '$RECOVERY/repo' fsck --full --strict
     test -z \"\$(git -C '$RECOVERY/repo' status --short)\"
-    git -C '$RECOVERY/repo' ls-files -z | sort -z | xargs -0 sha256sum > '$OUT/terminal-recovered-tracked-sha256.txt'
+    cd '$RECOVERY/repo'
+    git ls-files -z | sort -z | xargs -0 sha256sum > '$OUT/terminal-recovered-tracked-sha256.txt'
     cmp '$OUT/terminal-tracked-sha256.txt' '$OUT/terminal-recovered-tracked-sha256.txt'
   "
 fi
@@ -248,6 +302,7 @@ def load(path):
 
 base = load(out / 'RESULT.json') or {}
 steps = {name: code(name) for name in [
+    'terminal-preparation',
     'terminal-source-identity',
     'terminal-lock-binding',
     'terminal-npm-ci',
@@ -265,6 +320,7 @@ steps = {name: code(name) for name in [
 ]}
 source_commit = text(out / 'terminal-source-commit')
 source_tree = text(out / 'terminal-source-tree')
+source_parent = text(out / 'terminal-source-parent', 'ROOT_SNAPSHOT')
 status_before = text(out / 'terminal-source-status-before.txt', '')
 status_after = text(out / 'terminal-source-status-after.txt', '')
 policy = load(out / 'terminal-source-policy.json') or {}
@@ -297,7 +353,7 @@ result = {
     'source': {
         'commit': source_commit,
         'tree': source_tree,
-        'parent': 'ROOT_SNAPSHOT',
+        'parent': source_parent,
         'bundle': digest(out / 'MEV-818-terminal-source.bundle'),
         'archive': digest(out / 'MEV-818-terminal-source.tar.gz'),
         'trackedManifest': digest(out / 'terminal-tracked-sha256.txt'),
