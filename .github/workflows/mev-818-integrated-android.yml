@@ -1,0 +1,240 @@
+name: MEV-818 integrated React Native Android slice
+
+on:
+  push:
+    branches:
+      - transport/mev-818-rn0871-package-20260925
+    paths:
+      - .github/workflows/mev-818-integrated-android.yml
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      OVERLAY_URL: 'https://sdmntprnortheu.oaiusercontent.com/files/00000000-c258-81f4-87fa-12962fc1c915/raw?se=2026-09-25T17%3A10%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=de560ea2-62b4-538e-8238-0fa689016438&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T13%3A12%3A16Z&ske=2026-09-26T13%3A12%3A16Z&sks=b&skv=2026-02-06&sig=1aqGEBMWU3WsdOTCSr70iEyLJ%2Bqeq6J/WrBcy1XYCNU%3D'
+      OVERLAY_SHA256: '54f265cb0e08e32e0e041542054c62de08a7e052163cefb48f6c962c179bce2e'
+      OVERLAY_BYTES: '72295'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.3.0'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download and verify immutable source overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input out logs
+          curl -fL --retry 5 --retry-delay 2 "$OVERLAY_URL" -o input/mev-818-overlay.tgz
+          test "$(stat -c %s input/mev-818-overlay.tgz)" = "$OVERLAY_BYTES"
+          echo "$OVERLAY_SHA256  input/mev-818-overlay.tgz" | sha256sum -c -
+          tar -tzf input/mev-818-overlay.tgz > logs/OVERLAY-CONTENTS.log
+
+      - name: Bootstrap exact official React Native 0.87.1 Android shell
+        id: bootstrap
+        shell: bash
+        run: |
+          set +e
+          mkdir -p workspace/examples
+          (
+            cd workspace/examples
+            npx --yes @react-native-community/cli@20.2.0 init MevixNative \
+              --version 0.87.1 \
+              --pm npm \
+              --skip-git-init
+          ) > logs/BOOTSTRAP.log 2>&1
+          status=$?
+          echo "$status" > out/BOOTSTRAP.exit
+          if [ "$status" -eq 0 ]; then
+            mv workspace/examples/MevixNative workspace/examples/native-android
+          fi
+          exit 0
+
+      - name: Apply exact UI Foundation overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat out/BOOTSTRAP.exit)" = 0
+          tar -xzf input/mev-818-overlay.tgz -C workspace
+          test -f workspace/examples/native-android/android/gradlew
+          test -f workspace/packages/ui-native/src/android/react-native-binding.tsx
+          grep -q '^newArchEnabled=true$' workspace/examples/native-android/android/gradle.properties
+          rm -rf workspace/examples/native-android/node_modules
+          rm -f workspace/examples/native-android/package-lock.json
+
+      - name: Install exact integrated package graph
+        id: install
+        working-directory: workspace/examples/native-android
+        shell: bash
+        run: |
+          set +e
+          npm install --audit=false --fund=false > ../../../logs/INSTALL.log 2>&1
+          status=$?
+          echo "$status" > ../../../out/INSTALL.exit
+          if [ "$status" -eq 0 ]; then
+            node - <<'NODE' > ../../../logs/PACKAGE-GRAPH.json
+          const fs=require('node:fs');
+          const lock=JSON.parse(fs.readFileSync('package-lock.json','utf8'));
+          const root=lock.packages[''];
+          const rn=lock.packages['node_modules/react-native'];
+          const react=lock.packages['node_modules/react'];
+          const ts=lock.packages['node_modules/typescript'];
+          const native=lock.packages['node_modules/@ui-foundation/ui-native'];
+          const exact={
+            reactNative:{version:rn?.version,resolved:rn?.resolved,integrity:rn?.integrity},
+            react:{version:react?.version,resolved:react?.resolved,integrity:react?.integrity},
+            typescript:{version:ts?.version,resolved:ts?.resolved,integrity:ts?.integrity},
+            uiNative:native,
+            root,
+          };
+          if (rn?.version !== '0.87.1') throw new Error(`RN_VERSION:${rn?.version}`);
+          if (react?.version !== '19.2.3') throw new Error(`REACT_VERSION:${react?.version}`);
+          if (ts?.version !== '6.0.3') throw new Error(`TS_VERSION:${ts?.version}`);
+          if (rn?.resolved !== 'https://registry.npmjs.org/react-native/-/react-native-0.87.1.tgz') throw new Error(`RN_ORIGIN:${rn?.resolved}`);
+          if (native?.resolved !== '../../packages/ui-native') throw new Error(`UI_NATIVE_ORIGIN:${native?.resolved}`);
+          process.stdout.write(JSON.stringify(exact,null,2)+'\n');
+          NODE
+            graph_status=$?
+            if [ "$graph_status" -ne 0 ]; then status=$graph_status; echo "$status" > ../../../out/INSTALL.exit; fi
+          fi
+          exit 0
+
+      - name: Strict TypeScript compile
+        id: typecheck
+        working-directory: workspace/examples/native-android
+        shell: bash
+        run: |
+          set +e
+          if [ "$(cat ../../../out/INSTALL.exit)" -eq 0 ]; then
+            npm run typecheck > ../../../logs/TYPECHECK.log 2>&1
+            status=$?
+          else
+            status=97
+          fi
+          echo "$status" > ../../../out/TYPECHECK.exit
+          exit 0
+
+      - name: Jest render contract
+        id: test
+        working-directory: workspace/examples/native-android
+        shell: bash
+        run: |
+          set +e
+          if [ "$(cat ../../../out/TYPECHECK.exit)" -eq 0 ]; then
+            npm test -- --runInBand > ../../../logs/JEST.log 2>&1
+            status=$?
+          else
+            status=97
+          fi
+          echo "$status" > ../../../out/JEST.exit
+          exit 0
+
+      - name: Production Metro bundle
+        id: bundle
+        working-directory: workspace/examples/native-android
+        shell: bash
+        run: |
+          set +e
+          if [ "$(cat ../../../out/TYPECHECK.exit)" -eq 0 ]; then
+            rm -rf android/app/src/main/assets android/app/src/main/res/drawable-* android/app/src/main/res/raw
+            mkdir -p android/app/src/main/assets android/app/src/main/res
+            npx react-native bundle \
+              --platform android \
+              --dev false \
+              --entry-file index.js \
+              --bundle-output android/app/src/main/assets/index.android.bundle \
+              --assets-dest android/app/src/main/res \
+              --reset-cache > ../../../logs/METRO.log 2>&1
+            status=$?
+          else
+            status=97
+          fi
+          echo "$status" > ../../../out/METRO.exit
+          exit 0
+
+      - name: New Architecture Android APK
+        id: gradle
+        working-directory: workspace/examples/native-android/android
+        shell: bash
+        run: |
+          set +e
+          if [ "$(cat ../../../../out/METRO.exit)" -eq 0 ]; then
+            ./gradlew :app:assembleDebug --no-daemon --stacktrace > ../../../../logs/GRADLE.log 2>&1
+            status=$?
+          else
+            status=97
+          fi
+          echo "$status" > ../../../../out/GRADLE.exit
+          exit 0
+
+      - name: Collect immutable result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp input/mev-818-overlay.tgz out/
+          if [ -f workspace/examples/native-android/package-lock.json ]; then cp workspace/examples/native-android/package-lock.json out/app-package-lock.json; fi
+          if [ -f workspace/examples/native-android/android/app/src/main/assets/index.android.bundle ]; then cp workspace/examples/native-android/android/app/src/main/assets/index.android.bundle out/; fi
+          if [ -f workspace/examples/native-android/android/app/build/outputs/apk/debug/app-debug.apk ]; then cp workspace/examples/native-android/android/app/build/outputs/apk/debug/app-debug.apk out/MEV-818-app-debug.apk; fi
+          rm -rf workspace/examples/native-android/node_modules workspace/examples/native-android/android/.gradle workspace/examples/native-android/android/app/.cxx workspace/examples/native-android/android/app/build workspace/examples/native-android/android/build
+          if [ -d workspace ]; then
+            tar --sort=name --mtime='UTC 1980-01-01' --owner=0 --group=0 --numeric-owner -czf out/MEV-818-integrated-source.tgz -C workspace .
+          fi
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          out=pathlib.Path('out')
+          def exit_code(name):
+              path=out/f'{name}.exit'
+              return int(path.read_text().strip()) if path.exists() else 99
+          steps={name:exit_code(name) for name in ['BOOTSTRAP','INSTALL','TYPECHECK','JEST','METRO','GRADLE']}
+          files={}
+          for path in sorted(p for p in out.iterdir() if p.is_file() and p.suffix!='.exit'):
+              files[path.name]={'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+          status='PASS_REACT_NATIVE_ANDROID_APK' if all(value==0 for value in steps.values()) and 'MEV-818-app-debug.apk' in files else 'FAIL_REACT_NATIVE_ANDROID_APK'
+          result={
+            'schema':'mevix.mev-818-integrated-android.v1',
+            'status':status,
+            'sourceOverlay':{'bytes':int('72295'),'sha256':'54f265cb0e08e32e0e041542054c62de08a7e052163cefb48f6c962c179bce2e'},
+            'runtime':{'reactNative':'0.87.1','react':'19.2.3','typescript':'6.0.3','node':'24.3.0','architecture':'new','hermes':True},
+            'steps':steps,
+            'files':files,
+            'boundaries':{'emulator':'NOT_RUN','physicalDevice':'NOT_RUN','visualAcceptance':'NOT_RUN'}
+          }
+          (out/'RESULT.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n')
+          sums=[]
+          for path in sorted(p for p in out.iterdir() if p.is_file()):
+              sums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
+          (out/'SHA256SUMS').write_text('\n'.join(sums)+'\n')
+          print(json.dumps(result,sort_keys=True))
+          PY
+
+      - name: Upload integrated APK and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-818-integrated-react-native-android
+          path: |
+            out/
+            logs/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Enforce product result
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          result=json.load(open('out/RESULT.json'))
+          if result['status']!='PASS_REACT_NATIVE_ANDROID_APK':
+              raise SystemExit(f"{result['status']}:{result['steps']}")
+          print('PASS_REACT_NATIVE_ANDROID_APK')
+          PY
