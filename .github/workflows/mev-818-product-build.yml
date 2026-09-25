@@ -1,0 +1,90 @@
+name: MEV-818 exact product Android build
+
+on:
+  push:
+    branches:
+      - transport/mev-818-product-build-20260925
+    paths:
+      - .github/workflows/mev-818-product-build.yml
+      - .github/scripts/mev-818-product-build.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mev-818-product-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact execution carrier
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download exact source archive and verify identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p transport/mev-818-product
+          curl --fail --location --retry 3 \
+            'https://sdmntprnortheu.oaiusercontent.com/files/00000000-4980-81f4-b2de-08e19517dba3/raw?se=2026-09-25T15%3A32%3A02Z&sp=r&sv=2026-02-06&sr=b&scid=cd8044c0-97a6-55d2-9ec6-8b65cd96f0f6&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T08%3A02%3A03Z&ske=2026-09-26T08%3A02%3A03Z&sks=b&skv=2026-02-06&sig=dpiSipLfKEYM6WAeXGirvSKiwpcKTckoy9etRGiSdJE%3D' \
+            --output transport/mev-818-product/chat-ui-foundation-mev-818-65ebacd.tar.gz
+          echo 'e4f04de8ff6394c6b37913da63b145bb3517b2d8d509fca8472cbd1c9bfe71ba  transport/mev-818-product/chat-ui-foundation-mev-818-65ebacd.tar.gz' | sha256sum -c -
+
+      - name: Materialize accepted Android toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -perm -u+x 2>/dev/null | sort | tail -1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platform-tools' 'platforms;android-35' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+          test -d "$SDK_ROOT/platforms/android-35"
+          test -d "$SDK_ROOT/build-tools/36.0.0"
+          test -d "$SDK_ROOT/ndk/27.1.12297006"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Execute exact source build and record all contours
+        shell: bash
+        run: bash .github/scripts/mev-818-product-build.sh
+
+      - name: Publish immutable evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-818-exact-product-build
+          path: |
+            out/MEV-818-exact-product-build.zip
+            out/mev-818-product-build/RESULT.json
+            out/mev-818-product-build/SHA256SUMS
+            out/mev-818-product-build/NativeNeutralApp-debug.apk
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Enforce machine verdict
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          result=json.load(open('out/mev-818-product-build/RESULT.json'))
+          print(json.dumps(result,indent=2,sort_keys=True))
+          raise SystemExit(0 if result['status']=='PASS_MEV_818_EXACT_ANDROID_BUILD' else 1)
+          PY
