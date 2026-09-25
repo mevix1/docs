@@ -15,9 +15,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     env:
-      OVERLAY_URL: 'https://sdmntprnortheu.oaiusercontent.com/files/00000000-c258-81f4-87fa-12962fc1c915/raw?se=2026-09-25T17%3A10%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=de560ea2-62b4-538e-8238-0fa689016438&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T13%3A12%3A16Z&ske=2026-09-26T13%3A12%3A16Z&sks=b&skv=2026-02-06&sig=1aqGEBMWU3WsdOTCSr70iEyLJ%2Bqeq6J/WrBcy1XYCNU%3D'
-      OVERLAY_SHA256: '54f265cb0e08e32e0e041542054c62de08a7e052163cefb48f6c962c179bce2e'
-      OVERLAY_BYTES: '72295'
+      OVERLAY_URL: 'https://sdmntprnortheu.oaiusercontent.com/files/00000000-a170-81f4-94d1-79f68e69bbdb/raw?se=2026-09-25T17%3A13%3A19Z&sp=r&sv=2026-02-06&sr=b&scid=3732a099-04e7-5153-9bbe-cdbca93a1b87&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T15%3A23%3A31Z&ske=2026-09-26T15%3A23%3A31Z&sks=b&skv=2026-02-06&sig=KaaHJL8O8Sj3pUe%2BVycaScld8X7KDWCHjTXA6ecj/FI%3D'
+      OVERLAY_SHA256: 'e9caf3f274f290640fbacab1e1b39278757e8833ab5054fc7cdc09a31fb32a2f'
+      OVERLAY_BYTES: '172658'
+      APP_LOCK_SHA256: '438526de6b1cc141b2191d5357a31d416acfe45c6d23fb4375951f4f0709f255'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -63,12 +64,14 @@ jobs:
         run: |
           set -euo pipefail
           test "$(cat out/BOOTSTRAP.exit)" = 0
-          tar -xzf input/mev-818-overlay.tgz -C workspace
-          test -f workspace/examples/native-android/android/gradlew
-          test -f workspace/packages/ui-native/src/android/react-native-binding.tsx
-          grep -q '^newArchEnabled=true$' workspace/examples/native-android/android/gradle.properties
           rm -rf workspace/examples/native-android/node_modules
           rm -f workspace/examples/native-android/package-lock.json
+          tar -xzf input/mev-818-overlay.tgz -C workspace
+          test -f workspace/examples/native-android/android/gradlew
+          test -f workspace/examples/native-android/__tests__/App.test.tsx
+          test -f workspace/packages/ui-native/src/android/react-native-binding.tsx
+          grep -q '^newArchEnabled=true$' workspace/examples/native-android/android/gradle.properties
+          echo "$APP_LOCK_SHA256  workspace/examples/native-android/package-lock.json" | sha256sum -c -
 
       - name: Install exact integrated package graph
         id: install
@@ -76,9 +79,14 @@ jobs:
         shell: bash
         run: |
           set +e
-          npm install --audit=false --fund=false > ../../../logs/INSTALL.log 2>&1
+          npm ci --audit=false --fund=false > ../../../logs/INSTALL.log 2>&1
           status=$?
           echo "$status" > ../../../out/INSTALL.exit
+          if [ "$status" -eq 0 ]; then
+            echo "$APP_LOCK_SHA256  package-lock.json" | sha256sum -c - >> ../../../logs/INSTALL.log 2>&1
+            hash_status=$?
+            if [ "$hash_status" -ne 0 ]; then status=$hash_status; echo "$status" > ../../../out/INSTALL.exit; fi
+          fi
           if [ "$status" -eq 0 ]; then
             node - <<'NODE' > ../../../logs/PACKAGE-GRAPH.json
           const fs=require('node:fs');
@@ -200,9 +208,10 @@ jobs:
               files[path.name]={'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
           status='PASS_REACT_NATIVE_ANDROID_APK' if all(value==0 for value in steps.values()) and 'MEV-818-app-debug.apk' in files else 'FAIL_REACT_NATIVE_ANDROID_APK'
           result={
-            'schema':'mevix.mev-818-integrated-android.v1',
+            'schema':'mevix.mev-818-integrated-android.v2',
             'status':status,
-            'sourceOverlay':{'bytes':int('72295'),'sha256':'54f265cb0e08e32e0e041542054c62de08a7e052163cefb48f6c962c179bce2e'},
+            'sourceOverlay':{'bytes':int('172658'),'sha256':'e9caf3f274f290640fbacab1e1b39278757e8833ab5054fc7cdc09a31fb32a2f'},
+            'appPackageLockSha256':'438526de6b1cc141b2191d5357a31d416acfe45c6d23fb4375951f4f0709f255',
             'runtime':{'reactNative':'0.87.1','react':'19.2.3','typescript':'6.0.3','node':'24.3.0','architecture':'new','hermes':True},
             'steps':steps,
             'files':files,
