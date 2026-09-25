@@ -1,0 +1,120 @@
+name: MEV-818 bootstrap React Native 0.87.1 Android
+
+on:
+  push:
+    branches:
+      - transport/mev-818-rn0871-package-20260925
+    paths:
+      - .github/workflows/mev-818-rn0871-bootstrap.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.3.0'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Bootstrap exact app and run bounded build
+        id: run
+        shell: bash
+        run: |
+          set +e
+          mkdir -p out
+          {
+            echo '=== environment ==='
+            node --version
+            npm --version
+            java -version
+            echo "ANDROID_HOME=${ANDROID_HOME:-}"
+            echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+            command -v adb || true
+            command -v sdkmanager || true
+            echo '=== cli init ==='
+            npx --yes @react-native-community/cli@20.2.0 init MevixNative \
+              --version 0.87.1 \
+              --pm npm \
+              --skip-git-init
+            init_status=$?
+            echo "INIT_EXIT=$init_status"
+            if [ "$init_status" -eq 0 ]; then
+              cd MevixNative
+              echo '=== identities ==='
+              node -e "const p=require('./package.json'); console.log(JSON.stringify({name:p.name,react:p.dependencies.react,reactNative:p.dependencies['react-native'],devDependencies:p.devDependencies,engines:p.engines},null,2))"
+              sha256sum package.json package-lock.json 2>/dev/null || true
+              echo '=== strict typecheck ==='
+              npx tsc --noEmit
+              type_status=$?
+              echo "TYPECHECK_EXIT=$type_status"
+              echo '=== Android build ==='
+              (cd android && ./gradlew :app:assembleDebug --no-daemon --stacktrace)
+              build_status=$?
+              echo "ANDROID_BUILD_EXIT=$build_status"
+              cd ..
+            else
+              type_status=97
+              build_status=98
+            fi
+            printf '{"schema":"mevix.mev-818-bootstrap.v1","initExit":%s,"typecheckExit":%s,"androidBuildExit":%s}\n' "$init_status" "$type_status" "$build_status" > out/RESULT.json
+            exit_code=0
+            if [ "$init_status" -ne 0 ] || [ "$type_status" -ne 0 ] || [ "$build_status" -ne 0 ]; then exit_code=1; fi
+            echo "FINAL_EXIT=$exit_code"
+            exit "$exit_code"
+          } > out/COMMAND.log 2>&1
+        continue-on-error: true
+
+      - name: Package source and receipts
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d MevixNative ]; then
+            rm -rf MevixNative/node_modules MevixNative/android/.gradle MevixNative/android/app/build MevixNative/android/build
+            tar --sort=name --mtime='UTC 1980-01-01' --owner=0 --group=0 --numeric-owner \
+              -czf out/MevixNative-source.tgz MevixNative
+          fi
+          python3 - <<'PY'
+          import hashlib,json,pathlib,zipfile
+          out=pathlib.Path('out')
+          files=sorted(p for p in out.iterdir() if p.is_file())
+          sums=[]
+          for p in files:
+              sums.append(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}")
+          (out/'SHA256SUMS').write_text('\n'.join(sums)+'\n')
+          archive=pathlib.Path('MEV-818-rn0871-bootstrap-and-android-build.zip')
+          with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as zf:
+              for p in sorted(out.iterdir()):
+                  info=zipfile.ZipInfo(p.name,(1980,1,1,0,0,0)); info.compress_type=zipfile.ZIP_DEFLATED; info.external_attr=0o100644<<16; info.create_system=3
+                  zf.writestr(info,p.read_bytes(),compress_type=zipfile.ZIP_DEFLATED,compresslevel=9)
+          print(json.dumps({'archive':archive.name,'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()},sort_keys=True))
+          PY
+
+      - name: Upload bootstrap evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-818-rn0871-bootstrap-and-android-build
+          path: MEV-818-rn0871-bootstrap-and-android-build.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Enforce result
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          r=json.load(open('out/RESULT.json'))
+          if any(r[k] != 0 for k in ('initExit','typecheckExit','androidBuildExit')):
+              raise SystemExit(f'FAIL_BOOTSTRAP_OR_BUILD:{r}')
+          print('PASS_EXACT_RN0871_BOOTSTRAP_AND_ANDROID_BUILD')
+          PY
