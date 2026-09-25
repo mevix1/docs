@@ -68,6 +68,80 @@ jobs:
         shell: bash
         run: bash .github/scripts/mev-818-terminal-guard.sh
 
+      - name: Remove verified ephemeral compiler link and finalize evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          CANDIDATE="$GITHUB_WORKSPACE/.mev-818-converged-work/candidate"
+          APP="$CANDIDATE/NativeNeutralApp"
+          LINK="$CANDIDATE/library/packages/ui-native/node_modules"
+          OUT="$GITHUB_WORKSPACE/out/mev-818-converged"
+
+          STATUS_BEFORE="$(git -C "$CANDIDATE" status --short)"
+          printf '%s\n' "$STATUS_BEFORE" > "$OUT/terminal-precleanup-status.txt"
+          test "$STATUS_BEFORE" = '?? library/packages/ui-native/node_modules'
+          test -L "$LINK"
+          EXPECTED_TARGET="$(readlink -f "$APP/node_modules")"
+          ACTUAL_TARGET="$(readlink -f "$LINK")"
+          test "$ACTUAL_TARGET" = "$EXPECTED_TARGET"
+          rm "$LINK"
+          git -C "$CANDIDATE" status --short > "$OUT/terminal-source-status-after.txt"
+          test ! -s "$OUT/terminal-source-status-after.txt"
+
+          OUT="$OUT" LINK="$LINK" TARGET="$ACTUAL_TARGET" python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          out = pathlib.Path(os.environ['OUT'])
+          result_path = out / 'RESULT.json'
+          result = json.loads(result_path.read_text())
+          steps = result.get('steps', {})
+          if not steps or not all(value == 0 for value in steps.values()):
+              raise SystemExit('NONZERO_TERMINAL_STEP')
+          cleanup = {
+              'schema': 'mevix.mev-818.ephemeral-link-cleanup.v1',
+              'preCleanupStatus': '?? library/packages/ui-native/node_modules',
+              'path': 'library/packages/ui-native/node_modules',
+              'kind': 'symlink',
+              'target': os.environ['TARGET'],
+              'expectedTargetSuffix': '/NativeNeutralApp/node_modules',
+              'postCleanupStatus': '',
+          }
+          if not cleanup['target'].endswith(cleanup['expectedTargetSuffix']):
+              raise SystemExit('UNEXPECTED_LINK_TARGET')
+          (out / 'terminal-ephemeral-link-cleanup.json').write_text(
+              json.dumps(cleanup, indent=2, sort_keys=True) + '\n'
+          )
+          result['schema'] = 'mevix.mev-818-terminal-single-source-build.v3'
+          result.setdefault('checks', {})['sourceCleanAfter'] = True
+          result['checks']['ephemeralCompilerLinkRemoved'] = True
+          result.setdefault('preparation', {})['postQualificationCleanup'] = cleanup
+          result['status'] = (
+              'PASS_MEV_818_TERMINAL_SINGLE_SOURCE_BUILD'
+              if all(result['checks'].values()) else
+              'FAIL_MEV_818_TERMINAL_SINGLE_SOURCE_BUILD'
+          )
+          result_path.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+          if result['status'] != 'PASS_MEV_818_TERMINAL_SINGLE_SOURCE_BUILD':
+              raise SystemExit(result['status'])
+          PY
+
+          (
+            cd "$OUT"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+          python3 - <<'PY'
+          import pathlib
+          import zipfile
+          root = pathlib.Path('out/mev-818-converged')
+          target = pathlib.Path('out/MEV-818-converged-product-build.zip')
+          with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+              for path in sorted(root.rglob('*')):
+                  if path.is_file():
+                      archive.write(path, path.relative_to(root.parent))
+          PY
+
       - name: Publish immutable terminal evidence
         if: always()
         uses: actions/upload-artifact@v4
