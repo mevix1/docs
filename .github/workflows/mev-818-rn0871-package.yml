@@ -1,0 +1,112 @@
+name: MEV-818 exact react-native 0.87.1 package
+
+on:
+  push:
+    branches:
+      - transport/mev-818-rn0871-package-20260925
+    paths:
+      - .github/workflows/mev-818-rn0871-package.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch exact official package and verify registry integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, io, json, pathlib, tarfile, urllib.request, zipfile
+
+          name = 'react-native'
+          version = '0.87.1'
+          metadata_url = f'https://registry.npmjs.org/{name}/{version}'
+          expected_tarball = f'https://registry.npmjs.org/{name}/-/{name}-{version}.tgz'
+          out = pathlib.Path('out')
+          out.mkdir()
+
+          request = urllib.request.Request(metadata_url, headers={'Accept': 'application/json', 'User-Agent': 'mevix-mev-818/1.0'})
+          with urllib.request.urlopen(request, timeout=120) as response:
+              assert response.status == 200, response.status
+              metadata_bytes = response.read()
+          metadata = json.loads(metadata_bytes)
+          assert metadata['name'] == name
+          assert metadata['version'] == version
+          dist = metadata['dist']
+          assert dist['tarball'] == expected_tarball, dist['tarball']
+          integrity = dist['integrity']
+          assert integrity.startswith('sha512-'), integrity
+
+          request = urllib.request.Request(expected_tarball, headers={'Accept': 'application/octet-stream', 'User-Agent': 'mevix-mev-818/1.0'})
+          with urllib.request.urlopen(request, timeout=240) as response:
+              assert response.status == 200, response.status
+              assert response.geturl() == expected_tarball, response.geturl()
+              tgz = response.read()
+
+          actual_digest = hashlib.sha512(tgz).digest()
+          expected_digest = base64.b64decode(integrity.removeprefix('sha512-'), validate=True)
+          assert actual_digest == expected_digest
+          sha256 = hashlib.sha256(tgz).hexdigest()
+
+          with tarfile.open(fileobj=io.BytesIO(tgz), mode='r:gz') as tf:
+              members = tf.getmembers()
+              names = [m.name for m in members]
+              assert 'package/package.json' in names
+              for member in members:
+                  pure = pathlib.PurePosixPath(member.name)
+                  assert not pure.is_absolute()
+                  assert '..' not in pure.parts
+              package_json = json.load(tf.extractfile('package/package.json'))
+          assert package_json['name'] == name
+          assert package_json['version'] == version
+
+          tgz_name = f'{name}-{version}.tgz'
+          (out / tgz_name).write_bytes(tgz)
+          (out / 'REGISTRY-METADATA.json').write_bytes(metadata_bytes)
+          receipt = {
+              'schema': 'mevix.mev-818-react-native-package.v1',
+              'status': 'PASS_EXACT_OFFICIAL_PACKAGE',
+              'name': name,
+              'version': version,
+              'metadataUrl': metadata_url,
+              'tarballUrl': expected_tarball,
+              'integrity': integrity,
+              'sha512': actual_digest.hex(),
+              'sha256': sha256,
+              'bytes': len(tgz),
+              'tarMembers': len(members),
+              'packageJson': package_json,
+              'redirectsAllowed': False,
+              'officialRegistryOnly': True,
+          }
+          (out / 'RECEIPT.json').write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + '\n')
+          (out / 'SHA256SUMS').write_text(
+              f"{sha256}  {tgz_name}\n"
+              f"{hashlib.sha256(metadata_bytes).hexdigest()}  REGISTRY-METADATA.json\n"
+              f"{hashlib.sha256((out / 'RECEIPT.json').read_bytes()).hexdigest()}  RECEIPT.json\n"
+          )
+          archive = pathlib.Path('MEV-818-react-native-0.87.1-official-package.zip')
+          with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              for path in sorted(out.iterdir()):
+                  info = zipfile.ZipInfo(path.name, (1980, 1, 1, 0, 0, 0))
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.external_attr = 0o100644 << 16
+                  info.create_system = 3
+                  zf.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+          print(json.dumps({'status': receipt['status'], 'archive': archive.name, 'archiveSha256': hashlib.sha256(archive.read_bytes()).hexdigest(), 'tarballSha256': sha256, 'bytes': len(tgz)}, sort_keys=True))
+          PY
+
+      - name: Upload verified exact package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-818-react-native-0.87.1-official-package
+          path: MEV-818-react-native-0.87.1-official-package.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
