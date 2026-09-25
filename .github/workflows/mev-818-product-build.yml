@@ -1,4 +1,4 @@
-name: MEV-818 exact product Android build
+name: MEV-818 converged exact React Native Android build
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/mev-818-product-build.yml
       - .github/scripts/mev-818-product-build.sh
+      - transport/mev-818-ui-native-source.tgz.b64
   workflow_dispatch:
 
 permissions:
@@ -19,15 +20,15 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - name: Checkout exact execution carrier
         uses: actions/checkout@v4
 
-      - name: Set up Node 24
+      - name: Set up exact Node 24.3
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '24.3.0'
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -35,15 +36,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Download exact source archive and verify identity
+      - name: Verify embedded exact source carrier
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p transport/mev-818-product
-          curl --fail --location --retry 3 \
-            'https://sdmntprnortheu.oaiusercontent.com/files/00000000-4980-81f4-b2de-08e19517dba3/raw?se=2026-09-25T15%3A32%3A02Z&sp=r&sv=2026-02-06&sr=b&scid=cd8044c0-97a6-55d2-9ec6-8b65cd96f0f6&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T08%3A02%3A03Z&ske=2026-09-26T08%3A02%3A03Z&sks=b&skv=2026-02-06&sig=dpiSipLfKEYM6WAeXGirvSKiwpcKTckoy9etRGiSdJE%3D' \
-            --output transport/mev-818-product/chat-ui-foundation-mev-818-65ebacd.tar.gz
-          echo 'e4f04de8ff6394c6b37913da63b145bb3517b2d8d509fca8472cbd1c9bfe71ba  transport/mev-818-product/chat-ui-foundation-mev-818-65ebacd.tar.gz' | sha256sum -c -
+          test -s transport/mev-818-ui-native-source.tgz.b64
+          base64 -d transport/mev-818-ui-native-source.tgz.b64 > /tmp/mev-818-source.tgz
+          echo 'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0  /tmp/mev-818-source.tgz' | sha256sum -c -
 
       - name: Materialize accepted Android toolchain
         shell: bash
@@ -60,7 +59,7 @@ jobs:
           echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
-      - name: Execute exact source build and record all contours
+      - name: Execute converged exact source build and record all contours
         shell: bash
         run: bash .github/scripts/mev-818-product-build.sh
 
@@ -68,12 +67,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mev-818-exact-product-build
+          name: mev-818-converged-product-build
           path: |
-            out/MEV-818-exact-product-build.zip
-            out/mev-818-product-build/RESULT.json
-            out/mev-818-product-build/SHA256SUMS
-            out/mev-818-product-build/NativeNeutralApp-debug.apk
+            out/MEV-818-converged-product-build.zip
+            out/mev-818-converged/RESULT.json
+            out/mev-818-converged/SHA256SUMS
+            out/mev-818-converged/NativeNeutralApp-debug.apk
+            out/mev-818-converged/MEV-818-converged-source.bundle
+            out/mev-818-converged/MEV-818-converged-source.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
@@ -84,7 +85,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
-          result=json.load(open('out/mev-818-product-build/RESULT.json'))
-          print(json.dumps(result,indent=2,sort_keys=True))
-          raise SystemExit(0 if result['status']=='PASS_MEV_818_EXACT_ANDROID_BUILD' else 1)
+          result = json.load(open('out/mev-818-converged/RESULT.json'))
+          print(json.dumps(result, indent=2, sort_keys=True))
+          raise SystemExit(0 if result['status'] == 'PASS_MEV_818_CONVERGED_ANDROID_BUILD' else 1)
           PY
