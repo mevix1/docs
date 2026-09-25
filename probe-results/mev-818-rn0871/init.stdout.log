@@ -1,0 +1,7 @@
+[0m
+  
+  [32mRun instructions for [1mAndroid[22m[39m:
+    • Have an Android emulator running (quickest way to get started), or a device connected.
+    • cd "/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp" && npx react-native run-android
+  
+  [0m

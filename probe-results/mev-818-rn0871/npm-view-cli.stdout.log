@@ -1,0 +1,9 @@
+{
+  "name": "@react-native-community/cli",
+  "version": "20.2.0",
+  "engines": {
+    "node": ">=20.19.4"
+  },
+  "dist.integrity": "sha512-5RZKkBeUFC4hhrzySzxWmRJwXBTc2PE3L6QUgvnJk3QDxNYMY7aGuI8Gr9eZRS1DbiY10IPWqpJfqSIplzVG6A==",
+  "dist.tarball": "https://registry.npmjs.org/@react-native-community/cli/-/cli-20.2.0.tgz"
+}

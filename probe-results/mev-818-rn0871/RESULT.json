@@ -1,0 +1,83 @@
+{
+  "environment": {
+    "androidHome": "/usr/local/lib/android/sdk",
+    "java": "openjdk version \"17.0.20.1\" 2026-08-18",
+    "node": "v24.21.0",
+    "npm": "11.19.0",
+    "python": "3.12.3"
+  },
+  "issue": "MEV-818",
+  "lock": {
+    "lockfileVersion": 3,
+    "sha256": {
+      "bytes": 451436,
+      "sha256": "a9c5baad3ff45aaf45b993c1ac62e513b671c69a276af2f7c94568ec076ed1af"
+    }
+  },
+  "outputs": {
+    "apk": {
+      "bytes": 122716779,
+      "sha256": "c56c07ae95e1905c3709eb0fb52d11a99b9e8c0e358b7037137b33c2a4c9b851"
+    },
+    "jsBundle": {
+      "bytes": 902384,
+      "sha256": "8ed7cfb81a26499a1a450d67cd741d4c682a33adcd677c3254f025d31e3a3ff0"
+    }
+  },
+  "package": {
+    "dependencies": {
+      "@react-native/new-app-screen": "0.87.1",
+      "react": "19.2.3",
+      "react-native": "0.87.1",
+      "react-native-safe-area-context": "^5.5.2"
+    },
+    "devDependencies": {
+      "@babel/core": "^7.25.2",
+      "@babel/preset-env": "^7.25.3",
+      "@babel/runtime": "^7.25.0",
+      "@react-native-community/cli": "20.2.0",
+      "@react-native-community/cli-platform-android": "20.2.0",
+      "@react-native-community/cli-platform-ios": "20.2.0",
+      "@react-native/babel-preset": "0.87.1",
+      "@react-native/eslint-config": "0.87.1",
+      "@react-native/jest-preset": "0.87.1",
+      "@react-native/metro-config": "0.87.1",
+      "@react-native/typescript-config": "0.87.1",
+      "@types/jest": "^29.5.13",
+      "@types/react": "^19.2.0",
+      "@types/react-test-renderer": "^19.1.0",
+      "eslint": "^8.19.0",
+      "jest": "^29.6.3",
+      "prettier": "2.8.8",
+      "react-test-renderer": "19.2.3",
+      "typescript": "^6.0.3"
+    },
+    "engines": {
+      "node": ">= 22.11.0"
+    },
+    "name": "NativeNeutralApp",
+    "private": true,
+    "scripts": {
+      "android": "react-native run-android",
+      "ios": "react-native run-ios",
+      "lint": "eslint .",
+      "start": "react-native start",
+      "test": "jest"
+    },
+    "version": "0.0.1"
+  },
+  "schema": "mevix.mev-818-rn0871-hosted-probe.v1",
+  "status": "PASS_HOSTED_RN0871_ANDROID_BUILD",
+  "steps": {
+    "androidBuild": 0,
+    "bundle": 0,
+    "init": 0,
+    "typecheck": 0
+  },
+  "target": {
+    "androidBuildTools": "36.0.0",
+    "androidSdkPlatform": 35,
+    "jdk": 17,
+    "reactNative": "0.87.1"
+  }
+}

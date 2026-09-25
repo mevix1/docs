@@ -1,0 +1,6 @@
+node=v24.21.0
+npm=11.19.0
+java=openjdk version "17.0.20.1" 2026-08-18
+gradle=
+ANDROID_HOME=/usr/local/lib/android/sdk
+ANDROID_SDK_ROOT=/usr/local/lib/android/sdk

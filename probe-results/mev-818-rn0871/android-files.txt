@@ -1,0 +1,6 @@
+/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp/android/app/build.gradle
+/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp/android/app/src/main/AndroidManifest.xml
+/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp/android/build.gradle
+/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp/android/gradle.properties
+/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp/android/gradle/wrapper/gradle-wrapper.properties
+/home/runner/work/docs/docs/.mev-818-work/NativeNeutralApp/android/settings.gradle
