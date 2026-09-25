@@ -1,0 +1,132 @@
+name: MEV-661 bounded Android emulator runtime v4
+
+on:
+  push:
+    branches:
+      - transport/mev-661-emulator-runtime-20260925
+    paths:
+      - .github/workflows/mev-661-emulator-runtime-v4.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: mev-661-emulator-runtime-v4
+  cancel-in-progress: true
+
+env:
+  ANDROID_USER_HOME: ${{ github.workspace }}/.android-user
+  ANDROID_AVD_HOME: ${{ github.workspace }}/.android-user/avd
+
+jobs:
+  emulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout runtime carrier
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download immutable MEV-818 candidate artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mev-818-terminal-single-source-build
+          path: input/mev-818-terminal
+          repository: mevix1/docs
+          run-id: 36169656503
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize and verify exact candidate identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=input/mev-818-terminal
+          RESULT="$(find "$ROOT" -type f -path '*/mev-818-converged/RESULT.json' -print -quit)"
+          APK="$(find "$ROOT" -type f -name 'NativeNeutralApp-terminal-debug.apk' -print -quit)"
+          BUNDLE="$(find "$ROOT" -type f -name 'MEV-818-terminal-source.bundle' -print -quit)"
+          test -n "$RESULT" && test -n "$APK" && test -n "$BUNDLE"
+          cp "$RESULT" "$ROOT/RESULT.json"
+          cp "$APK" "$ROOT/NativeNeutralApp-terminal-debug.apk"
+          cp "$BUNDLE" "$ROOT/MEV-818-terminal-source.bundle"
+          echo 'e20636c169e023b9210fbdc6ea7ae6e0de483f277843e642ac0c7be8adb200bd  input/mev-818-terminal/NativeNeutralApp-terminal-debug.apk' | sha256sum -c -
+          python3 - <<'PY'
+          import json
+          r=json.load(open('input/mev-818-terminal/RESULT.json'))
+          assert r['status']=='PASS_MEV_818_TERMINAL_SINGLE_SOURCE_BUILD'
+          assert r['source']['commit']=='b761a10fbd148dfa2c21ce4640dc5161ab06711a'
+          assert r['source']['tree']=='265bae21ae3b6277e8904c371be9414ff5279500'
+          assert r['package']['appLock']['sha256']=='d3c1b1716cb5c8be45b35372a627327c19065e9590900a213c531c015e967776'
+          PY
+
+      - name: Enable KVM and align Android homes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Install Android emulator image
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -perm -u+x 2>/dev/null | sort | tail -1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platform-tools' 'emulator' 'platforms;android-35' 'build-tools;35.0.0' 'system-images;android-35;google_apis;x86_64'
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/emulator" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: Materialize emulator and Metro from exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/mev-661-emulator-runtime.sh
+
+      - name: Execute bounded post-runtime observations
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/mev-661-emulator-post-v4.sh
+
+      - name: Publish bounded runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-661-emulator-core-v4
+          path: |
+            out/MEV-661-emulator-core-v4.zip
+            out/mev-661-runtime-v4/RESULT.json
+            out/mev-661-runtime-v4/SHA256SUMS
+            out/mev-661-runtime-v4/screenshots
+            out/mev-661-runtime-v4/ui
+            out/mev-661-runtime-v4/source-scope.json
+            out/mev-661-runtime-v4/ui-tree.json
+            out/mev-661-runtime-v4/logcat.txt
+            out/mev-661-runtime/emulator.log
+            out/mev-661-runtime/device-profile.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Enforce bounded non-terminal verdict
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          r=json.load(open('out/mev-661-runtime-v4/RESULT.json'))
+          print(json.dumps(r,indent=2,sort_keys=True))
+          assert r['terminalMEV661'] is False
+          raise SystemExit(0 if r['status']=='PASS_MEV_661_EMULATOR_CORE_RUNTIME_WITH_DECLARED_RESIDUALS' else 1)
+          PY
