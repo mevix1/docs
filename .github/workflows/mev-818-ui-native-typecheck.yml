@@ -53,11 +53,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p ../../out
-          ./node_modules/.bin/tsc -p tsconfig.json > ../../out/TYPECHECK.log 2>&1
+          mkdir -p ../../../out
+          ./node_modules/.bin/tsc -p tsconfig.json > ../../../out/TYPECHECK.log 2>&1
           status=$?
-          echo "$status" > ../../out/TYPECHECK.exit
-          cat ../../out/TYPECHECK.log
+          echo "$status" > ../../../out/TYPECHECK.exit
+          cat ../../../out/TYPECHECK.log
           exit "$status"
         continue-on-error: true
 
