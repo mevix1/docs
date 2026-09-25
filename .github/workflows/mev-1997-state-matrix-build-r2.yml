@@ -1,0 +1,90 @@
+name: MEV-1997 exact native state matrix build R2
+
+on:
+  push:
+    branches:
+      - transport/mev-1997-native-state-matrix-20260925
+    paths:
+      - .github/workflows/mev-1997-state-matrix-build-r2.yml
+      - .github/scripts/mev-1997-build-r2.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mev-1997-state-matrix-build-r2
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout execution carrier
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24.3
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.3.0'
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download exact complete R2 source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p input
+          curl --fail --location --retry 3 \
+            'https://sdmntprukwest.oaiusercontent.com/files/00000000-cc3c-8243-8c5d-288c1d2be8cb/raw?se=2026-09-25T19%3A23%3A31Z&sp=r&sv=2026-02-06&sr=b&scid=836991df-37dd-5cd2-91e4-e178ca749f33&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T11%3A58%3A18Z&ske=2026-09-26T11%3A58%3A18Z&sks=b&skv=2026-02-06&sig=%2BujaMp%2BpUzut3G8z5G3GvqUrAcyyoFIWkoO9OfBVvEk%3D' \
+            --output input/MEV-1997-native-state-matrix-source.bundle
+          echo 'ea7f1f3821508e1d0b932451e5702496789acf4dfc6d84fec6e76ac57d96ee83  input/MEV-1997-native-state-matrix-source.bundle' | sha256sum -c -
+
+      - name: Materialize accepted Android toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -perm -u+x 2>/dev/null | sort | tail -1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platform-tools' 'platforms;android-35' 'build-tools;36.0.0' 'ndk;27.1.12297006'
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Execute R2 exact source build and qualification
+        shell: bash
+        run: bash .github/scripts/mev-1997-build-r2.sh
+
+      - name: Publish immutable R2 build evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-1997-state-matrix-build-r2
+          path: |
+            out/MEV-1997-state-matrix-build.zip
+            out/mev-1997-build/RESULT.json
+            out/mev-1997-build/SHA256SUMS
+            out/mev-1997-build/MEV-1997-state-matrix-debug.apk
+            out/mev-1997-build/MEV-1997-source.bundle
+            out/mev-1997-build/EFFECTIVE-RUNNER-R2.sh
+            out/mev-1997-build/RUNNER-R2.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Enforce R2 machine verdict
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          result=json.load(open('out/mev-1997-build/RESULT.json'))
+          print(json.dumps(result,indent=2,sort_keys=True))
+          raise SystemExit(0 if result['status']=='PASS_MEV_1997_STATE_MATRIX_BUILD' else 1)
+          PY
