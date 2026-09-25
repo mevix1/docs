@@ -1,0 +1,65 @@
+name: MEV-818 RN 0.87.1 hosted Android probe
+
+on:
+  push:
+    branches:
+      - transport/mev-818-rn0871-probe-20260925
+    paths:
+      - .github/workflows/mev-818-rn0871-probe.yml
+      - .github/scripts/mev-818-rn0871-probe.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mev-818-rn0871-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact probe
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Qualify Android SDK 35 and Build Tools 36.0.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sdkmanager
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;36.0.0'
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          test -d "${ANDROID_HOME}/platforms/android-35"
+          test -d "${ANDROID_HOME}/build-tools/36.0.0"
+
+      - name: Run bounded exact probe
+        shell: bash
+        run: bash .github/scripts/mev-818-rn0871-probe.sh
+
+      - name: Publish machine evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-818-rn0871-hosted-probe
+          path: |
+            out/MEV-818-rn0871-hosted-probe.zip
+            out/mev-818-rn0871-probe/RESULT.json
+            out/mev-818-rn0871-probe/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
