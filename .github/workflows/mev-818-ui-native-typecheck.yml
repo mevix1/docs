@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.3.0'
 
-      - name: Restore exact source input
+      - name: Restore exact source input and current config correction
         shell: bash
         run: |
           set -euo pipefail
@@ -29,6 +29,16 @@ jobs:
           base64 -d transport/mev-818-ui-native-source.tgz.b64 > /tmp/mev-818-source.tgz
           echo 'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0  /tmp/mev-818-source.tgz' | sha256sum -c -
           tar -xzf /tmp/mev-818-source.tgz -C source
+          python3 - <<'PY'
+          import pathlib
+          path=pathlib.Path('source/packages/ui-native/tsconfig.json')
+          original=path.read_text()
+          expected='"@react-native/typescript-config/strict"'
+          if expected not in original:
+              raise SystemExit('UNEXPECTED_TYPESCRIPT_CONFIG_BASE')
+          path.write_text(original.replace(expected, '"@react-native/typescript-config"'))
+          PY
+          echo '733f7eb051a260be27a8134f5ab5ad49ffbcb3a6e3672a61e5c2520e03aaf912  source/packages/ui-native/tsconfig.json' | sha256sum -c -
 
       - name: Install exact package graph
         working-directory: source/packages/ui-native
@@ -36,6 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           npm install --ignore-scripts --package-lock=true --audit=false --fund=false
+          echo '03ac632acb0534ac6b098415a833e5291ea1cb78909a7dd1795e93853142851b  package-lock.json' | sha256sum -c -
           node - <<'NODE'
           const fs=require('node:fs');
           const lock=JSON.parse(fs.readFileSync('package-lock.json','utf8'));
@@ -70,6 +81,7 @@ jobs:
           cp source/packages/ui-native/package-lock.json out/package-lock.json
           type_status="$(cat out/TYPECHECK.exit 2>/dev/null || printf 99)"
           sha256sum source/packages/ui-native/package.json source/packages/ui-native/package-lock.json \
+            source/packages/ui-native/tsconfig.json \
             source/packages/ui-native/src/android/react-native-binding.tsx > out/SHA256SUMS
           TYPE_STATUS="$type_status" node - <<'NODE'
           const fs=require('node:fs'); const crypto=require('node:crypto');
@@ -82,8 +94,10 @@ jobs:
             reactNative:lock.packages['node_modules/react-native'],
             react:lock.packages['node_modules/react'],
             sourceArchiveSha256:'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0',
+            sourceConfigPatch:'@react-native/typescript-config/strict -> @react-native/typescript-config',
             packageJsonSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package.json')).digest('hex'),
             lockSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package-lock.json')).digest('hex'),
+            tsconfigSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/tsconfig.json')).digest('hex'),
             bindingSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/src/android/react-native-binding.tsx')).digest('hex'),
             typecheckExit:typeStatus,
             androidBuild:'NOT_RUN',
