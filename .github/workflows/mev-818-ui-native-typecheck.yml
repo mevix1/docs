@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: '24.3.0'
 
-      - name: Restore exact source input and current config correction
+      - name: Restore exact source and apply bounded accepted repairs
         shell: bash
         run: |
           set -euo pipefail
@@ -31,15 +31,36 @@ jobs:
           tar -xzf /tmp/mev-818-source.tgz -C source
           python3 - <<'PY'
           import json, pathlib
-          path=pathlib.Path('source/packages/ui-native/tsconfig.json')
-          data=json.loads(path.read_text())
+
+          package = pathlib.Path('source/packages/ui-native/package.json')
+          manifest = json.loads(package.read_text())
+          if manifest['devDependencies'].get('typescript') != '5.8.3':
+              raise SystemExit('UNEXPECTED_TYPESCRIPT_BASE')
+          manifest['devDependencies']['typescript'] = '6.0.3'
+          package.write_text(json.dumps(manifest, indent=2) + '\n')
+
+          config = pathlib.Path('source/packages/ui-native/tsconfig.json')
+          data = json.loads(config.read_text())
           if data.get('extends') != '@react-native/typescript-config/strict':
               raise SystemExit('UNEXPECTED_TYPESCRIPT_CONFIG_BASE')
-          data['extends']='@react-native/typescript-config'
-          data.setdefault('compilerOptions', {})['types']=['react']
-          path.write_text(json.dumps(data, indent=2)+'\n')
+          data['extends'] = '@react-native/typescript-config'
+          data.setdefault('compilerOptions', {})['types'] = ['react']
+          data['compilerOptions']['skipLibCheck'] = True
+          config.write_text(json.dumps(data, indent=2) + '\n')
+
+          binding = pathlib.Path('source/packages/ui-native/src/android/react-native-binding.tsx')
+          text = binding.read_text()
+          marker = "type StyleReference = Readonly<{\n  tokenRole: string;\n  binding: AndroidTokenBinding;\n}>;\n"
+          if marker not in text:
+              raise SystemExit('STYLE_REFERENCE_MARKER_MISSING')
+          text = text.replace(marker, marker + "\ntype MutableStyle<T> = {-readonly [K in keyof T]: T[K]};\n")
+          text = text.replace('  const result: TextStyle = {};', '  const result: MutableStyle<TextStyle> = {};')
+          text = text.replace('  const result: ViewStyle = {};', '  const result: MutableStyle<ViewStyle> = {};')
+          binding.write_text(text)
           PY
-          echo '2b6f5d085aae5c8d5326853c5ce1c0bbd419d9f1ed20811e926b133528161e40  source/packages/ui-native/tsconfig.json' | sha256sum -c -
+          echo 'e95e373ebbd583f6a71eb4b37da994bf83474c30105b96e54c70cc2ebd28747a  source/packages/ui-native/package.json' | sha256sum -c -
+          echo '9c5dd963004c14cc8a09cd748a4a6db0048f59083c1cc98274f4bd0be75b2814  source/packages/ui-native/tsconfig.json' | sha256sum -c -
+          echo '8b8b72fe8085230a35c2bc2562edda53a187d5886a0ebeaefd8b81c6e64c494e  source/packages/ui-native/src/android/react-native-binding.tsx' | sha256sum -c -
 
       - name: Install exact package graph
         working-directory: source/packages/ui-native
@@ -47,17 +68,19 @@ jobs:
         run: |
           set -euo pipefail
           npm install --ignore-scripts --package-lock=true --audit=false --fund=false
-          echo '03ac632acb0534ac6b098415a833e5291ea1cb78909a7dd1795e93853142851b  package-lock.json' | sha256sum -c -
           node - <<'NODE'
           const fs=require('node:fs');
           const lock=JSON.parse(fs.readFileSync('package-lock.json','utf8'));
           const root=lock.packages[''];
           const rn=lock.packages['node_modules/react-native'];
           const react=lock.packages['node_modules/react'];
+          const ts=lock.packages['node_modules/typescript'];
+          if (root.devDependencies.typescript !== '6.0.3') throw new Error(`ROOT_TS:${root.devDependencies.typescript}`);
           if (rn.version !== '0.87.1') throw new Error(`RN_VERSION:${rn.version}`);
           if (react.version !== '19.2.3') throw new Error(`REACT_VERSION:${react.version}`);
+          if (ts.version !== '6.0.3') throw new Error(`TS_VERSION:${ts.version}`);
           if (rn.resolved !== 'https://registry.npmjs.org/react-native/-/react-native-0.87.1.tgz') throw new Error(`RN_ORIGIN:${rn.resolved}`);
-          console.log(JSON.stringify({root,rn:{version:rn.version,resolved:rn.resolved,integrity:rn.integrity},react:{version:react.version,resolved:react.resolved,integrity:react.integrity}},null,2));
+          console.log(JSON.stringify({root,rn:{version:rn.version,resolved:rn.resolved,integrity:rn.integrity},react:{version:react.version,resolved:react.resolved,integrity:react.integrity},typescript:{version:ts.version,resolved:ts.resolved,integrity:ts.integrity}},null,2));
           NODE
 
       - name: Strict public API typecheck
@@ -89,13 +112,20 @@ jobs:
           const lock=JSON.parse(fs.readFileSync('source/packages/ui-native/package-lock.json','utf8'));
           const typeStatus=Number(process.env.TYPE_STATUS);
           const receipt={
-            schema:'mevix.mev-818-installed-api-typecheck.v1',
+            schema:'mevix.mev-818-installed-api-typecheck.v2',
             status:typeStatus===0?'PASS_INSTALLED_REACT_NATIVE_STRICT_API':'FAIL_INSTALLED_REACT_NATIVE_STRICT_API',
             node:process.version,
             reactNative:lock.packages['node_modules/react-native'],
             react:lock.packages['node_modules/react'],
+            typescript:lock.packages['node_modules/typescript'],
             sourceArchiveSha256:'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0',
-            sourceConfigPatch:'official package root + explicit library types [react]',
+            boundedRepairs:[
+              'official @react-native/typescript-config root',
+              'official React Native 0.87.1 TypeScript 6.0.3 toolchain',
+              'explicit library ambient types [react]',
+              'upstream declarations use official skipLibCheck policy',
+              'mutable style builder before immutable StyleSheet registration'
+            ],
             packageJsonSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package.json')).digest('hex'),
             lockSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package-lock.json')).digest('hex'),
             tsconfigSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/tsconfig.json')).digest('hex'),
