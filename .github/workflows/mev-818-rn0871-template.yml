@@ -1,0 +1,93 @@
+name: MEV-818 exact React Native 0.87.1 template
+
+on:
+  push:
+    branches:
+      - transport/mev-818-rn0871-package-20260925
+    paths:
+      - .github/workflows/mev-818-rn0871-template.yml
+
+permissions:
+  contents: read
+
+jobs:
+  template:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.3.0'
+
+      - name: Fetch and verify exact official template package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, io, json, pathlib, tarfile, urllib.parse, urllib.request, zipfile
+
+          encoded = urllib.parse.quote('@react-native-community/template', safe='')
+          name = '@react-native-community/template'
+          version = '0.87.1'
+          metadata_url = f'https://registry.npmjs.org/{encoded}/{version}'
+          out = pathlib.Path('out-template')
+          out.mkdir()
+          request = urllib.request.Request(metadata_url, headers={'Accept':'application/json','User-Agent':'mevix-mev-818/1.0'})
+          with urllib.request.urlopen(request, timeout=120) as response:
+              assert response.status == 200
+              metadata_bytes = response.read()
+          metadata = json.loads(metadata_bytes)
+          assert metadata['name'] == name
+          assert metadata['version'] == version
+          dist = metadata['dist']
+          tarball = dist['tarball']
+          assert tarball.startswith('https://registry.npmjs.org/@react-native-community/template/-/react-native-community-template-')
+          request = urllib.request.Request(tarball, headers={'Accept':'application/octet-stream','User-Agent':'mevix-mev-818/1.0'})
+          with urllib.request.urlopen(request, timeout=240) as response:
+              assert response.status == 200
+              assert response.geturl() == tarball
+              tgz = response.read()
+          expected = base64.b64decode(dist['integrity'].removeprefix('sha512-'), validate=True)
+          actual = hashlib.sha512(tgz).digest()
+          assert actual == expected
+          with tarfile.open(fileobj=io.BytesIO(tgz), mode='r:gz') as tf:
+              members = tf.getmembers()
+              names = [m.name for m in members]
+              assert 'package/package.json' in names
+              assert 'package/template/package.json' in names
+              for member in members:
+                  pure = pathlib.PurePosixPath(member.name)
+                  assert not pure.is_absolute() and '..' not in pure.parts
+              package_json = json.load(tf.extractfile('package/package.json'))
+              app_json = json.load(tf.extractfile('package/template/package.json'))
+          assert package_json['name'] == name and package_json['version'] == version
+          assert app_json['dependencies']['react-native'] == version
+          tgz_name = 'react-native-community-template-0.87.1.tgz'
+          (out / tgz_name).write_bytes(tgz)
+          (out / 'REGISTRY-METADATA.json').write_bytes(metadata_bytes)
+          receipt = {
+            'schema':'mevix.mev-818-react-native-template.v1',
+            'status':'PASS_EXACT_OFFICIAL_TEMPLATE',
+            'name':name,'version':version,'metadataUrl':metadata_url,'tarballUrl':tarball,
+            'integrity':dist['integrity'],'sha512':actual.hex(),'sha256':hashlib.sha256(tgz).hexdigest(),
+            'bytes':len(tgz),'tarMembers':len(members),'packageJson':package_json,'templatePackageJson':app_json,
+            'officialRegistryOnly':True,'redirectsAllowed':False,
+          }
+          (out/'RECEIPT.json').write_text(json.dumps(receipt,indent=2,ensure_ascii=False)+'\n')
+          archive=pathlib.Path('MEV-818-react-native-community-template-0.87.1.zip')
+          with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as zf:
+              for path in sorted(out.iterdir()):
+                  info=zipfile.ZipInfo(path.name,(1980,1,1,0,0,0)); info.compress_type=zipfile.ZIP_DEFLATED; info.external_attr=0o100644<<16; info.create_system=3
+                  zf.writestr(info,path.read_bytes(),compress_type=zipfile.ZIP_DEFLATED,compresslevel=9)
+          print(json.dumps({'status':receipt['status'],'archive':archive.name,'archiveSha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'templateSha256':receipt['sha256'],'templateReact':app_json['dependencies'].get('react'),'templateReactNative':app_json['dependencies'].get('react-native'),'node':package_json.get('engines')},sort_keys=True))
+          PY
+
+      - name: Upload verified exact template
+        uses: actions/upload-artifact@v4
+        with:
+          name: mev-818-react-native-community-template-0.87.1
+          path: MEV-818-react-native-community-template-0.87.1.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
