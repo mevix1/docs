@@ -30,15 +30,16 @@ jobs:
           echo 'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0  /tmp/mev-818-source.tgz' | sha256sum -c -
           tar -xzf /tmp/mev-818-source.tgz -C source
           python3 - <<'PY'
-          import pathlib
+          import json, pathlib
           path=pathlib.Path('source/packages/ui-native/tsconfig.json')
-          original=path.read_text()
-          expected='"@react-native/typescript-config/strict"'
-          if expected not in original:
+          data=json.loads(path.read_text())
+          if data.get('extends') != '@react-native/typescript-config/strict':
               raise SystemExit('UNEXPECTED_TYPESCRIPT_CONFIG_BASE')
-          path.write_text(original.replace(expected, '"@react-native/typescript-config"'))
+          data['extends']='@react-native/typescript-config'
+          data.setdefault('compilerOptions', {})['types']=['react']
+          path.write_text(json.dumps(data, indent=2)+'\n')
           PY
-          echo '733f7eb051a260be27a8134f5ab5ad49ffbcb3a6e3672a61e5c2520e03aaf912  source/packages/ui-native/tsconfig.json' | sha256sum -c -
+          echo '2b6f5d085aae5c8d5326853c5ce1c0bbd419d9f1ed20811e926b133528161e40  source/packages/ui-native/tsconfig.json' | sha256sum -c -
 
       - name: Install exact package graph
         working-directory: source/packages/ui-native
@@ -94,7 +95,7 @@ jobs:
             reactNative:lock.packages['node_modules/react-native'],
             react:lock.packages['node_modules/react'],
             sourceArchiveSha256:'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0',
-            sourceConfigPatch:'@react-native/typescript-config/strict -> @react-native/typescript-config',
+            sourceConfigPatch:'official package root + explicit library types [react]',
             packageJsonSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package.json')).digest('hex'),
             lockSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package-lock.json')).digest('hex'),
             tsconfigSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/tsconfig.json')).digest('hex'),
