@@ -20,8 +20,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.3.0'
-          cache: npm
-          cache-dependency-path: source/packages/ui-native/package.json
 
       - name: Restore exact source input
         shell: bash
@@ -54,32 +52,40 @@ jobs:
         working-directory: source/packages/ui-native
         shell: bash
         run: |
-          set -euo pipefail
-          ./node_modules/.bin/tsc -p tsconfig.json
+          set +e
+          mkdir -p ../../out
+          ./node_modules/.bin/tsc -p tsconfig.json > ../../out/TYPECHECK.log 2>&1
+          status=$?
+          echo "$status" > ../../out/TYPECHECK.exit
+          cat ../../out/TYPECHECK.log
+          exit "$status"
+        continue-on-error: true
 
       - name: Build deterministic receipt
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
           cp source/packages/ui-native/package-lock.json out/package-lock.json
+          type_status="$(cat out/TYPECHECK.exit 2>/dev/null || printf 99)"
           sha256sum source/packages/ui-native/package.json source/packages/ui-native/package-lock.json \
             source/packages/ui-native/src/android/react-native-binding.tsx > out/SHA256SUMS
-          node - <<'NODE'
+          TYPE_STATUS="$type_status" node - <<'NODE'
           const fs=require('node:fs'); const crypto=require('node:crypto');
           const lock=JSON.parse(fs.readFileSync('source/packages/ui-native/package-lock.json','utf8'));
+          const typeStatus=Number(process.env.TYPE_STATUS);
           const receipt={
             schema:'mevix.mev-818-installed-api-typecheck.v1',
-            status:'PASS_INSTALLED_REACT_NATIVE_STRICT_API',
+            status:typeStatus===0?'PASS_INSTALLED_REACT_NATIVE_STRICT_API':'FAIL_INSTALLED_REACT_NATIVE_STRICT_API',
             node:process.version,
-            npm:process.env.npm_config_user_agent ?? null,
             reactNative:lock.packages['node_modules/react-native'],
             react:lock.packages['node_modules/react'],
             sourceArchiveSha256:'a1ca235a330821353eee42b83da6f42683aa434bcb8697c558a9cf9eec1f4ed0',
             packageJsonSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package.json')).digest('hex'),
             lockSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/package-lock.json')).digest('hex'),
             bindingSha256:crypto.createHash('sha256').update(fs.readFileSync('source/packages/ui-native/src/android/react-native-binding.tsx')).digest('hex'),
-            typecheck:'PASS',
+            typecheckExit:typeStatus,
             androidBuild:'NOT_RUN',
             emulatorDevice:'NOT_RUN'
           };
@@ -90,6 +96,7 @@ jobs:
           sha256sum MEV-818-installed-react-native-strict-api-typecheck.tgz
 
       - name: Upload exact installed API evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mev-818-installed-react-native-strict-api-typecheck
@@ -97,3 +104,13 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
+
+      - name: Enforce typecheck result
+        shell: bash
+        run: |
+          status="$(cat out/TYPECHECK.exit)"
+          if [ "$status" -ne 0 ]; then
+            echo "FAIL_INSTALLED_REACT_NATIVE_STRICT_API:$status" >&2
+            exit "$status"
+          fi
+          echo PASS_INSTALLED_REACT_NATIVE_STRICT_API
