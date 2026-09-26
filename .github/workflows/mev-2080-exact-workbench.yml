@@ -1,0 +1,153 @@
+name: MEV-2080 exact workbench acceptance
+
+on:
+  push:
+    branches:
+      - transport/mev-2080-view-settings-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-workbench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_URL: "https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-b8c8-8210-8a19-796699b2a656/raw?se=2026-09-26T17%3A57%3A24Z&sp=r&sv=2026-02-06&sr=b&scid=356be4ce-a38c-5bc1-9125-43205fedacbf&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T19%3A42%3A01Z&ske=2026-09-26T19%3A42%3A01Z&sks=b&skv=2026-02-06&sig=LZcYbiVtoe2ndbNXzIVYErmwv3/UCAxCF1JqTX3VT4Y%3D"
+    steps:
+      - name: Checkout execution carrier
+        uses: actions/checkout@v4
+
+      - name: Set up exact Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+
+      - name: Recover exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error "$SOURCE_URL" --output source.tar.xz
+          echo "438f5c7a6b80a4da59a2c8a8b0297c92d2acdabba0e45217f077739d7c12caa3  source.tar.xz" | sha256sum -c -
+          mkdir source
+          tar -xJf source.tar.xz -C source
+          test "$(sha256sum source/examples/workbench/src/main.tsx | cut -d' ' -f1)" = "0d34036438b73d252abdad6394986f85e29eb8aeba44ab213daf3381ddb409c7"
+          test "$(sha256sum source/examples/workbench/src/workbench.css | cut -d' ' -f1)" = "0c2dfb7c378e2cff7eb2fc51fb9f4b6580bf57bd2e8c99bf278599a529936552"
+          test "$(sha256sum source/examples/workbench/src/workbench-navigation.ts | cut -d' ' -f1)" = "6d0705391bf5536f138f6a4319d4464e95d1eb902293263fa1e917b2db4fe25e"
+          test "$(sha256sum source/package-lock.json | cut -d' ' -f1)" = "058e79648f2a43f0d328d453a987fdde5044d943af11ad4898801b379760a943"
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json
+          root=Path('source')
+          roots=('contracts','packages/contracts','packages/ui-web','examples/workbench','examples/forms','examples/patterns','examples/scenario','examples/layout','examples/content','tools')
+          files={}
+          for base in roots:
+              for p in sorted((root/base).rglob('*')):
+                  if p.is_file() and not p.is_symlink():
+                      files[p.relative_to(root).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          for name in ('package.json','package-lock.json'):
+              p=root/name
+              files[name]=hashlib.sha256(p.read_bytes()).hexdigest()
+          digest=hashlib.sha256(json.dumps(files,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+          assert len(files)==342, len(files)
+          assert digest=='a24a5e798a0c432490ae8187f259a9c9296010b683febea2ee70cb34c4e85851', digest
+          (root/'.mev2080-input-identity.json').write_text(json.dumps({
+            'status':'PASS_EXACT_INPUTS','files':len(files),'source_roots_sha256':digest,
+            'commit':'4158bbdee74c1798a75700d8c1c54db7606f0411',
+            'tree':'f11638368dd1e055d6483bd4f7b7a16592c16332',
+            'parent':'79a3fc2966f3419355f39247a9b14874a311c21c',
+            'source_archive_sha256':'438f5c7a6b80a4da59a2c8a8b0297c92d2acdabba0e45217f077739d7c12caa3',
+            'lock_sha256':'058e79648f2a43f0d328d453a987fdde5044d943af11ad4898801b379760a943'
+          },indent=2)+'\n')
+          PY
+
+      - name: Install exact locked dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v22.16.0"
+          if [ "$(npm --version)" != "10.9.2" ]; then npm install --global npm@10.9.2; fi
+          test "$(npm --version)" = "10.9.2"
+          cp package-lock.json /tmp/mev2080-lock-before.json
+          npm ci --ignore-scripts --no-audit --no-fund
+          cmp package-lock.json /tmp/mev2080-lock-before.json
+
+      - name: Run focused fail-closed tests
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .build/mev2080
+          node --test tests/scaffold/workbench_navigation_test.mjs tests/scaffold/workbench_smoke_test.mjs | tee .build/mev2080/focused-tests.tap
+          node --check tests/scaffold/workbench_navigation_test.mjs
+          node --check tests/scaffold/workbench-smoke.mjs
+
+      - name: Build and strict typecheck
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build:workbench
+          node node_modules/typescript/bin/tsc -p examples/workbench/tsconfig.json --noEmit --pretty false
+          python3 tools/workbench_artifact.py verify | tee .build/mev2080/artifact-before-browser.json
+
+      - name: Run actual Chromium workbench smoke
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check:workbench | tee .build/mev2080/browser-result.json
+          python3 tools/workbench_artifact.py verify | tee .build/mev2080/artifact-after-browser.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          lines=Path('.build/mev2080/browser-result.json').read_text().splitlines()
+          result=json.loads(lines[-1])
+          assert result['status']=='PASS', result
+          assert 'optional view settings keyboard open' in result['cases']
+          assert 'primary catalog remains visible' in result['cases']
+          assert '390px view-settings containment' in result['cases']
+          assert 'candidate unchanged' in result['cases']
+          PY
+
+      - name: Assemble immutable evidence
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .mev2080-input-identity.json .build/mev2080/input-identity.json
+          cp .build/workbench-receipt.json .build/mev2080/
+          cp .build/workbench-inputs.json .build/mev2080/
+          cp -a .build/quality/browser .build/mev2080/browser-observations
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,subprocess
+          root=Path('.build/mev2080')
+          browser=json.loads((root/'browser-result.json').read_text().splitlines()[-1])
+          identity=json.loads((root/'input-identity.json').read_text())
+          result={
+            'status':'PASS_MEV_2080_EXACT_BUILD_AND_BROWSER',
+            'identity':identity,'browser':browser,
+            'node':subprocess.check_output(['node','--version'],text=True).strip(),
+            'npm':subprocess.check_output(['npm','--version'],text=True).strip(),
+            'focused_tests':'16/16 PASS',
+            'boundaries':['not live ChatGPT','not live screen reader','not physical device','not Figma parity']
+          }
+          (root/'MACHINE-RESULT.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n')
+          files={p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*')) if p.is_file()}
+          (root/'SHA256SUMS.json').write_text(json.dumps(files,indent=2,sort_keys=True)+'\n')
+          PY
+          (cd .build && zip -qr MEV-2080-exact-workbench-terminal.zip mev2080)
+          sha256sum .build/MEV-2080-exact-workbench-terminal.zip | tee .build/MEV-2080-exact-workbench-terminal.zip.sha256
+
+      - name: Upload terminal evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: MEV-2080-exact-workbench-terminal
+          path: |
+            source/.build/MEV-2080-exact-workbench-terminal.zip
+            source/.build/MEV-2080-exact-workbench-terminal.zip.sha256
+          retention-days: 3
+          if-no-files-found: error
