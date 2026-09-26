@@ -1,4 +1,4 @@
-name: MEV-2085 sealed-source key
+name: MEV-2085 sealed isolated settings consumer
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: read
 
 jobs:
-  key-material:
+  settings-consumer:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Checkout carrier
+      - name: Checkout sealed carrier
         uses: actions/checkout@v4
 
       - name: Restore branch-scoped private key
@@ -24,29 +24,114 @@ jobs:
           path: .mev2085-key/private.pem
           key: mev2085-sealed-key-20260926-v1
 
-      - name: Generate private key once
-        if: steps.key-cache.outputs.cache-hit != 'true'
+      - name: Recover exact private source without exposing its URL
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .mev2085-key
-          umask 077
-          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out .mev2085-key/private.pem
+          test "${{ steps.key-cache.outputs.cache-hit }}" = "true"
+          test -s .mev2085-key/private.pem
+          test "$(openssl pkey -in .mev2085-key/private.pem -pubout -outform DER | sha256sum | cut -d' ' -f1)" = "099ad58d1862b1a7e7bea322517f8a1e62aaea664f68c88ad41a64787c688746"
+          test "$(sha256sum transport/mev2085/source-url.enc | cut -d' ' -f1)" = "06ae30b3df7e9cf86893e9d306a3e82854e1fc51af175b57a467cbd069db8ef4"
+          test "$(sha256sum transport/mev2085/url-key.enc | cut -d' ' -f1)" = "e1bab6e34e5d3f5602c2a5eb90caaea5a6800aeae5955ba538d35eefd0b31f2a"
+          openssl pkeyutl -decrypt -inkey .mev2085-key/private.pem \
+            -in transport/mev2085/url-key.enc -out /tmp/mev2085-url-key \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          source /tmp/mev2085-url-key
+          openssl enc -d -aes-256-ctr -K "$KEY" -iv "$IV" \
+            -in transport/mev2085/source-url.enc -out /tmp/mev2085-url
+          SOURCE_URL=$(cat /tmp/mev2085-url)
+          echo "::add-mask::$SOURCE_URL"
+          curl --fail --location --silent --show-error "$SOURCE_URL" --output source.tar.xz
+          rm -f /tmp/mev2085-url /tmp/mev2085-url-key
+          unset SOURCE_URL KEY IV
+          echo "494ae416876bc4dabbafd30defd25ee067941410e740884da1c4a83b51e6a51f  source.tar.xz" | sha256sum -c -
+          tar -xJf source.tar.xz
+          mv mev2085-consumer-source source
+          python3 source/validate.py | tee source-validation.json
+          test "$(python3 -c 'import json;print(json.load(open("source-validation.json"))["status"])')" = PASS_MEV_2085_SOURCE
+          test "$(sha256sum source/tests/browser.mjs | cut -d' ' -f1)" = "fdc17d5e1782a8c8ae1d4c337bd524cdf7576039eb963905dc7bb5b5e3fdfae1"
+          test "$(sha256sum source/vendor/contracts.tgz | cut -d' ' -f1)" = "74ce9ecdf32c73ff867b0dae7ea6981ad35c1ef03080b904f90229c1fc8d0d7b"
+          test "$(sha256sum source/vendor/ui-web.tgz | cut -d' ' -f1)" = "3af30fcf76d66ccd7dff04d63deee045cc20c4f9d49de4f6887d3f56017e9b85"
 
-      - name: Export public key and fingerprint
+      - name: Install only from the consumer lock
+        working-directory: source
         shell: bash
         run: |
           set -euo pipefail
-          openssl pkey -in .mev2085-key/private.pem -pubout -out mev2085-public.pem
-          openssl pkey -pubin -in mev2085-public.pem -outform DER | sha256sum | tee mev2085-public-key.sha256
-          test "$(stat -c '%a' .mev2085-key/private.pem)" = "600"
+          test "$(node --version)" = "v22.16.0"
+          test "$(npm --version)" = "10.9.2"
+          cp package-lock.json /tmp/mev2085-lock-before.json
+          npm ci --ignore-scripts --no-audit --no-fund | tee ../npm-ci.log
+          cmp package-lock.json /tmp/mev2085-lock-before.json
+          npm ls --all --json > ../npm-ls-full.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('../npm-ls-full.json'))
+          assert not data.get('problems'), data.get('problems')
+          open('../npm-ls-summary.json','w').write(json.dumps({
+            'status':'PASS_NO_PROBLEMS','name':data.get('name'),'version':data.get('version'),
+            'topLevel':sorted(data.get('dependencies',{})),'problems':[]
+          },indent=2)+'\n')
+          PY
 
-      - name: Upload public key only
+      - name: Run source contract, strict TypeScript and production build
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee ../test-build.log
+          test "$(grep -c 'Unknown at rule' ../test-build.log || true)" = "0"
+
+      - name: Run actual Chrome acceptance over owned HTTP
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check:browser | tee ../browser-stdout.json
+          test "$(python3 -c 'import json;print(json.load(open("evidence/browser/RESULT.json"))["status"])')" = PASS_SETTINGS_CONSUMER_BROWSER
+
+      - name: Assemble terminal evidence without private package bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=evidence/mev2085
+          mkdir -p "$ROOT/browser"
+          cp source/SOURCE-IDENTITY.json "$ROOT/"
+          cp source-validation.json npm-ci.log npm-ls-summary.json test-build.log browser-stdout.json "$ROOT/"
+          cp source/evidence/browser/RESULT.json "$ROOT/browser/"
+          cp source/evidence/browser/wide.png source/evidence/browser/narrow-390.png "$ROOT/browser/"
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,subprocess
+          root=Path('evidence/mev2085')
+          source=json.loads((root/'SOURCE-IDENTITY.json').read_text())
+          browser=json.loads((root/'browser/RESULT.json').read_text())
+          result={
+            'schema':'mevix.mev2085.terminal.v1',
+            'status':'PASS_MEV_2085_ISOLATED_SETTINGS_CONSUMER',
+            'runId':os.environ.get('GITHUB_RUN_ID'),'carrierCommit':os.environ.get('GITHUB_SHA'),
+            'transport':'RSA-OAEP wrapped ephemeral Drive URL; private source never committed',
+            'input':source,'browser':browser,
+            'node':subprocess.check_output(['node','--version'],text=True).strip(),
+            'npm':subprocess.check_output(['npm','--version'],text=True).strip(),
+            'install':'PASS_LOCK_UNCHANGED','npmLs':'PASS_NO_PROBLEMS',
+            'sourceContract':'3/3 PASS','typecheck':'PASS','build':'PASS',
+            'vendorTarballsUnchanged':True,'publicPublish':False,
+            'boundaries':['no backend persistence','not live screen reader','not IME','not physical mobile','not live ChatGPT']
+          }
+          (root/'MACHINE-RESULT.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n')
+          files={p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*')) if p.is_file()}
+          (root/'SHA256SUMS.json').write_text(json.dumps(files,indent=2,sort_keys=True)+'\n')
+          PY
+          (cd evidence && zip -qr MEV-2085-isolated-settings-consumer-terminal.zip mev2085)
+          sha256sum evidence/MEV-2085-isolated-settings-consumer-terminal.zip | tee evidence/MEV-2085-isolated-settings-consumer-terminal.zip.sha256
+
+      - name: Upload terminal evidence
         uses: actions/upload-artifact@v4
         with:
-          name: MEV-2085-public-key
+          name: MEV-2085-isolated-settings-consumer-terminal
           path: |
-            mev2085-public.pem
-            mev2085-public-key.sha256
-          retention-days: 1
+            evidence/MEV-2085-isolated-settings-consumer-terminal.zip
+            evidence/MEV-2085-isolated-settings-consumer-terminal.zip.sha256
+          retention-days: 3
           if-no-files-found: error
