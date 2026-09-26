@@ -1,0 +1,42 @@
+name: MEV-2085 Chrome for Testing input
+
+on:
+  push:
+    branches:
+      - transport/mev-2085-resource-settings-consumer-20260927
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-input:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout transport branch
+        uses: actions/checkout@v4
+
+      - name: Download official Chrome for Testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://storage.googleapis.com/chrome-for-testing-public/144.0.7559.96/linux64/chrome-linux64.zip'
+          curl --fail --location --retry 3 --silent --show-error "$url" -o chrome-linux64.zip
+          unzip -q chrome-linux64.zip
+          test -x chrome-linux64/chrome
+          version="$(chrome-linux64/chrome --version)"
+          test "$version" = 'Google Chrome for Testing 144.0.7559.96'
+          sha256sum chrome-linux64.zip > chrome-linux64.zip.sha256
+          printf '%s\n' "$version" > chrome-version.txt
+
+      - name: Upload verified public browser input
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-for-testing-144.0.7559.96-linux64
+          path: |
+            chrome-linux64.zip
+            chrome-linux64.zip.sha256
+            chrome-version.txt
+          retention-days: 1
+          if-no-files-found: error
