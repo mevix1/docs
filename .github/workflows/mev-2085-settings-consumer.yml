@@ -1,0 +1,131 @@
+name: MEV-2085 isolated settings consumer
+
+on:
+  push:
+    branches:
+      - transport/mev-2085-settings-consumer-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  settings-consumer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_URL: "https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-ba74-8210-930b-8b7e7dfcd8ee/raw?se=2026-09-26T18%3A46%3A03Z&sp=r&sv=2026-02-06&sr=b&scid=251b18d7-8589-5a06-9cc4-4024d660217c&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T19%3A47%3A31Z&ske=2026-09-26T19%3A47%3A31Z&sks=b&skv=2026-02-06&sig=NN0eSqpUumDOc4yDpYp9J6EaknYG4minNQfjKjS6HS0%3D"
+    steps:
+      - name: Checkout execution carrier
+        uses: actions/checkout@v4
+
+      - name: Set up exact Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+
+      - name: Recover and validate exact consumer source
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error "$SOURCE_URL" --output source.tar.xz
+          echo "e5a009ca47bcc496f7804a90f2b193f52a01773fc2ec45cfdae088e291bb0eb6  source.tar.xz" | sha256sum -c -
+          tar -xJf source.tar.xz
+          mv mev2085-consumer-source source
+          python3 source/validate.py | tee source-validation.json
+          test "$(python3 -c 'import json;print(json.load(open("source-validation.json"))["status"])')" = PASS_MEV_2085_SOURCE
+          test "$(sha256sum source/vendor/contracts.tgz | cut -d' ' -f1)" = "74ce9ecdf32c73ff867b0dae7ea6981ad35c1ef03080b904f90229c1fc8d0d7b"
+          test "$(sha256sum source/vendor/ui-web.tgz | cut -d' ' -f1)" = "3af30fcf76d66ccd7dff04d63deee045cc20c4f9d49de4f6887d3f56017e9b85"
+
+      - name: Install only from the consumer lock
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v22.16.0"
+          test "$(npm --version)" = "10.9.2"
+          cp package-lock.json /tmp/mev2085-lock-before.json
+          npm ci --ignore-scripts --no-audit --no-fund | tee ../npm-ci.log
+          cmp package-lock.json /tmp/mev2085-lock-before.json
+          npm ls --all --json > ../npm-ls-full.json
+          python3 - <<'PY'
+          import json
+          data=json.load(open('../npm-ls-full.json'))
+          assert not data.get('problems'), data.get('problems')
+          result={
+            'status':'PASS_NO_PROBLEMS',
+            'name':data.get('name'),
+            'version':data.get('version'),
+            'topLevel':sorted(data.get('dependencies',{})),
+            'problems':[]
+          }
+          open('../npm-ls-summary.json','w').write(json.dumps(result,indent=2)+'\n')
+          PY
+
+      - name: Run source contract, strict TypeScript and production build
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm test 2>&1 | tee ../test-build.log
+          test "$(grep -c 'Unknown at rule' ../test-build.log || true)" = "0"
+
+      - name: Run actual Chrome acceptance over owned HTTP
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run check:browser | tee ../browser-stdout.json
+          test "$(python3 -c 'import json;print(json.load(open("evidence/browser/RESULT.json"))["status"])')" = PASS_SETTINGS_CONSUMER_BROWSER
+
+      - name: Assemble terminal evidence without private package bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=evidence/mev2085
+          mkdir -p "$ROOT/browser"
+          cp source/SOURCE-IDENTITY.json "$ROOT/"
+          cp source-validation.json "$ROOT/"
+          cp npm-ci.log npm-ls-summary.json test-build.log browser-stdout.json "$ROOT/"
+          cp source/evidence/browser/RESULT.json "$ROOT/browser/"
+          cp source/evidence/browser/wide.png source/evidence/browser/narrow-390.png "$ROOT/browser/"
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,os,subprocess
+          root=Path('evidence/mev2085')
+          source=json.loads((root/'SOURCE-IDENTITY.json').read_text())
+          browser=json.loads((root/'browser/RESULT.json').read_text())
+          result={
+            'schema':'mevix.mev2085.terminal.v1',
+            'status':'PASS_MEV_2085_ISOLATED_SETTINGS_CONSUMER',
+            'runId':os.environ.get('GITHUB_RUN_ID'),
+            'carrierCommit':os.environ.get('GITHUB_SHA'),
+            'input':source,
+            'browser':browser,
+            'node':subprocess.check_output(['node','--version'],text=True).strip(),
+            'npm':subprocess.check_output(['npm','--version'],text=True).strip(),
+            'install':'PASS_LOCK_UNCHANGED',
+            'npmLs':'PASS_NO_PROBLEMS',
+            'sourceContract':'3/3 PASS',
+            'typecheck':'PASS',
+            'build':'PASS',
+            'vendorTarballsUnchanged':True,
+            'publicPublish':False,
+            'boundaries':['no backend persistence','not live screen reader','not IME','not physical mobile','not live ChatGPT']
+          }
+          (root/'MACHINE-RESULT.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n')
+          files={p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*')) if p.is_file()}
+          (root/'SHA256SUMS.json').write_text(json.dumps(files,indent=2,sort_keys=True)+'\n')
+          PY
+          (cd evidence && zip -qr MEV-2085-isolated-settings-consumer-terminal.zip mev2085)
+          sha256sum evidence/MEV-2085-isolated-settings-consumer-terminal.zip | tee evidence/MEV-2085-isolated-settings-consumer-terminal.zip.sha256
+
+      - name: Upload terminal evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: MEV-2085-isolated-settings-consumer-terminal
+          path: |
+            evidence/MEV-2085-isolated-settings-consumer-terminal.zip
+            evidence/MEV-2085-isolated-settings-consumer-terminal.zip.sha256
+          retention-days: 3
+          if-no-files-found: error
