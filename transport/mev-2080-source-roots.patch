@@ -1,0 +1,334 @@
+diff --git a/packages/ui-web/src/components/overlays/dialog/RadixDialog.tsx b/packages/ui-web/src/components/overlays/dialog/RadixDialog.tsx
+index a0c1d53..7b6f9ef 100644
+--- a/packages/ui-web/src/components/overlays/dialog/RadixDialog.tsx
++++ b/packages/ui-web/src/components/overlays/dialog/RadixDialog.tsx
+@@ -2,7 +2,10 @@ import type {ReactElement} from 'react';
+ import {DialogSource, type DialogProps as DialogSourceProps} from './Dialog.js';
+ import {radixDialogPrimitive} from './radix.js';
+ 
+-export type RadixDialogProps = Omit<DialogSourceProps, 'primitive'>;
++// Distribute over the controlled/uncontrolled union so the callback remains paired
++// with its open discriminant when the exact primitive is injected.
++type WithoutPrimitive<T> = T extends unknown ? Omit<T, 'primitive'> : never;
++export type RadixDialogProps = WithoutPrimitive<DialogSourceProps>;
+ 
+ /** Materialized public Dialog using the exact direct Radix package. */
+ export function Dialog(props: RadixDialogProps): ReactElement {
+diff --git a/packages/ui-web/src/components/overlays/dialog/radix.tsx b/packages/ui-web/src/components/overlays/dialog/radix.tsx
+index 3c9a158..a7347bd 100644
+--- a/packages/ui-web/src/components/overlays/dialog/radix.tsx
++++ b/packages/ui-web/src/components/overlays/dialog/radix.tsx
+@@ -17,9 +17,30 @@ function blockOutside(dismissal: Dismissal, event: PreventableEvent): void {
+   if (!dismissal.closeOnOutside) event.preventDefault();
+ }
+ 
+-const Root: DialogPrimitive['Root'] & SheetPrimitive['Root'] = (props) => (
+-  <RadixDialog.Root {...props} />
+-);
++type DialogRootProps = Parameters<DialogPrimitive['Root']>[0];
++type SheetRootProps = Parameters<SheetPrimitive['Root']>[0];
++
++function Root(props: DialogRootProps): ReactNode;
++function Root(props: SheetRootProps): ReactNode;
++function Root(props: DialogRootProps | SheetRootProps): ReactNode {
++  const {children, modal} = props;
++  if (props.open !== undefined) {
++    return (
++      <RadixDialog.Root modal={modal} open={props.open} onOpenChange={props.onOpenChange}>
++        {children}
++      </RadixDialog.Root>
++    );
++  }
++  return (
++    <RadixDialog.Root
++      modal={modal}
++      {...(props.defaultOpen === undefined ? {} : {defaultOpen: props.defaultOpen})}
++      {...(props.onOpenChange === undefined ? {} : {onOpenChange: props.onOpenChange})}
++    >
++      {children}
++    </RadixDialog.Root>
++  );
++}
+ 
+ const Trigger: DialogPrimitive['Trigger'] = (props) => (
+   <RadixDialog.Trigger {...props} />
+diff --git a/packages/ui-web/src/components/overlays/menu/RadixMenu.tsx b/packages/ui-web/src/components/overlays/menu/RadixMenu.tsx
+index 4e679e1..2c09aa3 100644
+--- a/packages/ui-web/src/components/overlays/menu/RadixMenu.tsx
++++ b/packages/ui-web/src/components/overlays/menu/RadixMenu.tsx
+@@ -2,7 +2,10 @@ import type {ReactElement} from 'react';
+ import {MenuSource, type MenuProps as MenuSourceProps} from './Menu.js';
+ import {radixMenuPrimitive} from './radix.js';
+ 
+-export type RadixMenuProps = Omit<MenuSourceProps, 'primitive'>;
++// Distribute over the controlled/uncontrolled union so the callback remains paired
++// with its open discriminant when the exact primitive is injected.
++type WithoutPrimitive<T> = T extends unknown ? Omit<T, 'primitive'> : never;
++export type RadixMenuProps = WithoutPrimitive<MenuSourceProps>;
+ 
+ /** Materialized public Menu using the exact direct Radix package. */
+ export function Menu(props: RadixMenuProps): ReactElement {
+diff --git a/packages/ui-web/src/components/overlays/menu/radix.tsx b/packages/ui-web/src/components/overlays/menu/radix.tsx
+index f703e4f..f19e666 100644
+--- a/packages/ui-web/src/components/overlays/menu/radix.tsx
++++ b/packages/ui-web/src/components/overlays/menu/radix.tsx
+@@ -1,9 +1,26 @@
+ import * as RadixMenu from '@radix-ui/react-dropdown-menu';
+ import type {MenuPrimitive} from './Menu.js';
+ 
+-const Root: MenuPrimitive['Root'] = (props) => (
+-  <RadixMenu.Root {...props} />
+-);
++const Root: MenuPrimitive['Root'] = (props) => {
++  const {children, modal, dir} = props;
++  if (props.open !== undefined) {
++    return (
++      <RadixMenu.Root modal={modal} dir={dir} open={props.open} onOpenChange={props.onOpenChange}>
++        {children}
++      </RadixMenu.Root>
++    );
++  }
++  return (
++    <RadixMenu.Root
++      modal={modal}
++      dir={dir}
++      {...(props.defaultOpen === undefined ? {} : {defaultOpen: props.defaultOpen})}
++      {...(props.onOpenChange === undefined ? {} : {onOpenChange: props.onOpenChange})}
++    >
++      {children}
++    </RadixMenu.Root>
++  );
++};
+ 
+ const Trigger: MenuPrimitive['Trigger'] = (props) => (
+   <RadixMenu.Trigger {...props} />
+@@ -17,18 +34,23 @@ const Content: MenuPrimitive['Content'] = (props) => (
+   <RadixMenu.Content {...props} />
+ );
+ 
+-const Item: MenuPrimitive['Item'] = (props) => (
+-  <RadixMenu.Item {...props} />
++const Item: MenuPrimitive['Item'] = ({onSelect, 'aria-describedby': describedBy, ...props}) => (
++  <RadixMenu.Item
++    {...props}
++    {...(onSelect === undefined ? {} : {onSelect})}
++    {...(describedBy === undefined ? {} : {'aria-describedby': describedBy})}
++  />
+ );
+ 
+-const CheckboxItem: MenuPrimitive['CheckboxItem'] = ({onCheckedChange, ...props}) => (
++const CheckboxItem: MenuPrimitive['CheckboxItem'] = ({
++  onCheckedChange,
++  'aria-describedby': describedBy,
++  ...props
++}) => (
+   <RadixMenu.CheckboxItem
+     {...props}
+-    onCheckedChange={onCheckedChange === undefined
+-      ? undefined
+-      : (checked) => {
+-          if (checked !== 'indeterminate') onCheckedChange(checked);
+-        }}
++    {...(onCheckedChange === undefined ? {} : {onCheckedChange})}
++    {...(describedBy === undefined ? {} : {'aria-describedby': describedBy})}
+   />
+ );
+ 
+@@ -36,8 +58,11 @@ const RadioGroup: MenuPrimitive['RadioGroup'] = (props) => (
+   <RadixMenu.RadioGroup {...props} />
+ );
+ 
+-const RadioItem: MenuPrimitive['RadioItem'] = (props) => (
+-  <RadixMenu.RadioItem {...props} />
++const RadioItem: MenuPrimitive['RadioItem'] = ({'aria-describedby': describedBy, ...props}) => (
++  <RadixMenu.RadioItem
++    {...props}
++    {...(describedBy === undefined ? {} : {'aria-describedby': describedBy})}
++  />
+ );
+ 
+ const ItemIndicator: MenuPrimitive['ItemIndicator'] = (props) => (
+@@ -52,12 +77,30 @@ const Label: MenuPrimitive['Label'] = (props) => (
+   <RadixMenu.Label {...props} />
+ );
+ 
+-const Sub: MenuPrimitive['Sub'] = (props) => (
+-  <RadixMenu.Sub {...props} />
+-);
++const Sub: MenuPrimitive['Sub'] = (props) => {
++  const {children} = props;
++  if (props.open !== undefined) {
++    return (
++      <RadixMenu.Sub open={props.open} onOpenChange={props.onOpenChange}>
++        {children}
++      </RadixMenu.Sub>
++    );
++  }
++  return (
++    <RadixMenu.Sub
++      {...(props.defaultOpen === undefined ? {} : {defaultOpen: props.defaultOpen})}
++      {...(props.onOpenChange === undefined ? {} : {onOpenChange: props.onOpenChange})}
++    >
++      {children}
++    </RadixMenu.Sub>
++  );
++};
+ 
+-const SubTrigger: MenuPrimitive['SubTrigger'] = (props) => (
+-  <RadixMenu.SubTrigger {...props} />
++const SubTrigger: MenuPrimitive['SubTrigger'] = ({'aria-describedby': describedBy, ...props}) => (
++  <RadixMenu.SubTrigger
++    {...props}
++    {...(describedBy === undefined ? {} : {'aria-describedby': describedBy})}
++  />
+ );
+ 
+ const SubContent: MenuPrimitive['SubContent'] = (props) => (
+diff --git a/packages/ui-web/src/components/overlays/popover/RadixPopover.tsx b/packages/ui-web/src/components/overlays/popover/RadixPopover.tsx
+index 1430ae6..cb195ad 100644
+--- a/packages/ui-web/src/components/overlays/popover/RadixPopover.tsx
++++ b/packages/ui-web/src/components/overlays/popover/RadixPopover.tsx
+@@ -2,7 +2,10 @@ import type {ReactElement} from 'react';
+ import {PopoverSource, type PopoverProps as PopoverSourceProps} from './Popover.js';
+ import {radixPopoverPrimitive} from './radix.js';
+ 
+-export type RadixPopoverProps = Omit<PopoverSourceProps, 'primitive'>;
++// Distribute over the controlled/uncontrolled union so the callback remains paired
++// with its open discriminant when the exact primitive is injected.
++type WithoutPrimitive<T> = T extends unknown ? Omit<T, 'primitive'> : never;
++export type RadixPopoverProps = WithoutPrimitive<PopoverSourceProps>;
+ 
+ /** Materialized public Popover using the exact direct Radix package. */
+ export function Popover(props: RadixPopoverProps): ReactElement {
+diff --git a/packages/ui-web/src/components/overlays/popover/radix.tsx b/packages/ui-web/src/components/overlays/popover/radix.tsx
+index 0d86970..3006e43 100644
+--- a/packages/ui-web/src/components/overlays/popover/radix.tsx
++++ b/packages/ui-web/src/components/overlays/popover/radix.tsx
+@@ -36,9 +36,25 @@ function usePopoverLabelIds(): PopoverLabelIds {
+   return value;
+ }
+ 
+-const Root: PopoverPrimitive['Root'] = (props) => (
+-  <RadixPopover.Root {...props} />
+-);
++const Root: PopoverPrimitive['Root'] = (props) => {
++  const {children, modal} = props;
++  if (props.open !== undefined) {
++    return (
++      <RadixPopover.Root modal={modal} open={props.open} onOpenChange={props.onOpenChange}>
++        {children}
++      </RadixPopover.Root>
++    );
++  }
++  return (
++    <RadixPopover.Root
++      modal={modal}
++      {...(props.defaultOpen === undefined ? {} : {defaultOpen: props.defaultOpen})}
++      {...(props.onOpenChange === undefined ? {} : {onOpenChange: props.onOpenChange})}
++    >
++      {children}
++    </RadixPopover.Root>
++  );
++};
+ 
+ const Trigger: PopoverPrimitive['Trigger'] = (props) => (
+   <RadixPopover.Trigger {...props} />
+diff --git a/packages/ui-web/src/components/overlays/sheet/RadixSheet.tsx b/packages/ui-web/src/components/overlays/sheet/RadixSheet.tsx
+index 33077c3..d0c8420 100644
+--- a/packages/ui-web/src/components/overlays/sheet/RadixSheet.tsx
++++ b/packages/ui-web/src/components/overlays/sheet/RadixSheet.tsx
+@@ -2,7 +2,10 @@ import type {ReactElement} from 'react';
+ import {radixSheetPrimitive} from '../dialog/radix.js';
+ import {SheetSource, type SheetProps as SheetSourceProps} from './Sheet.js';
+ 
+-export type RadixSheetProps = Omit<SheetSourceProps, 'primitive'>;
++// Distribute over the controlled/uncontrolled union so the callback remains paired
++// with its open discriminant when the exact primitive is injected.
++type WithoutPrimitive<T> = T extends unknown ? Omit<T, 'primitive'> : never;
++export type RadixSheetProps = WithoutPrimitive<SheetSourceProps>;
+ 
+ /** Materialized public Sheet sharing the qualified Radix Dialog engine. */
+ export function Sheet(props: RadixSheetProps): ReactElement {
+diff --git a/packages/ui-web/src/components/overlays/tooltip/RadixTooltip.tsx b/packages/ui-web/src/components/overlays/tooltip/RadixTooltip.tsx
+index 10b2721..a226fef 100644
+--- a/packages/ui-web/src/components/overlays/tooltip/RadixTooltip.tsx
++++ b/packages/ui-web/src/components/overlays/tooltip/RadixTooltip.tsx
+@@ -2,7 +2,10 @@ import type {ReactElement} from 'react';
+ import {TooltipSource, type TooltipProps as TooltipSourceProps} from './Tooltip.js';
+ import {radixTooltipPrimitive} from './radix.js';
+ 
+-export type RadixTooltipProps = Omit<TooltipSourceProps, 'primitive'>;
++// Distribute over the controlled/uncontrolled union so the callback remains paired
++// with its open discriminant when the exact primitive is injected.
++type WithoutPrimitive<T> = T extends unknown ? Omit<T, 'primitive'> : never;
++export type RadixTooltipProps = WithoutPrimitive<TooltipSourceProps>;
+ 
+ /** Materialized public Tooltip using the exact direct Radix package. */
+ export function Tooltip(props: RadixTooltipProps): ReactElement {
+diff --git a/packages/ui-web/src/components/overlays/tooltip/Tooltip.tsx b/packages/ui-web/src/components/overlays/tooltip/Tooltip.tsx
+index 70e648d..230aa06 100644
+--- a/packages/ui-web/src/components/overlays/tooltip/Tooltip.tsx
++++ b/packages/ui-web/src/components/overlays/tooltip/Tooltip.tsx
+@@ -12,7 +12,7 @@ import {
+ } from './presentation.js';
+ 
+ type PrimitiveProviderProps = Readonly<{
+-  children?: ReactNode;
++  children: ReactNode;
+   delayDuration?: number;
+   skipDelayDuration?: number;
+   disableHoverableContent?: boolean;
+diff --git a/packages/ui-web/src/components/overlays/tooltip/radix.tsx b/packages/ui-web/src/components/overlays/tooltip/radix.tsx
+index 987eb03..d2a3537 100644
+--- a/packages/ui-web/src/components/overlays/tooltip/radix.tsx
++++ b/packages/ui-web/src/components/overlays/tooltip/radix.tsx
+@@ -5,9 +5,33 @@ const Provider: TooltipPrimitive['Provider'] = (props) => (
+   <RadixTooltip.Provider {...props} />
+ );
+ 
+-const Root: TooltipPrimitive['Root'] = (props) => (
+-  <RadixTooltip.Root {...props} />
+-);
++const Root: TooltipPrimitive['Root'] = (props) => {
++  const {children, delayDuration, disableHoverableContent} = props;
++  const timing = {
++    ...(delayDuration === undefined ? {} : {delayDuration}),
++    ...(disableHoverableContent === undefined ? {} : {disableHoverableContent}),
++  };
++  if (props.open !== undefined) {
++    return (
++      <RadixTooltip.Root
++        {...timing}
++        open={props.open}
++        onOpenChange={props.onOpenChange}
++      >
++        {children}
++      </RadixTooltip.Root>
++    );
++  }
++  return (
++    <RadixTooltip.Root
++      {...timing}
++      {...(props.defaultOpen === undefined ? {} : {defaultOpen: props.defaultOpen})}
++      {...(props.onOpenChange === undefined ? {} : {onOpenChange: props.onOpenChange})}
++    >
++      {children}
++    </RadixTooltip.Root>
++  );
++};
+ 
+ const Trigger: TooltipPrimitive['Trigger'] = (props) => (
+   <RadixTooltip.Trigger {...props} />
+diff --git a/tools/check-ui-public-types.mjs b/tools/check-ui-public-types.mjs
+index 9c664d3..05fd48b 100644
+--- a/tools/check-ui-public-types.mjs
++++ b/tools/check-ui-public-types.mjs
+@@ -146,7 +146,7 @@ import * as React from 'react';
+ import {Accordion, type BoundAccordionProps} from '@ui-foundation/ui-web/Accordion/radix';
+ const base={label:'Details',unavailableText:'Unavailable',headingLevel:3 as const,
+  items:[{value:'help',title:'Help',contentKind:'help' as const,content:<p>Help</p>}]};
+-const controlled:BoundAccordionProps={...base,selection:{kind:'single-controlled',value:'help',collapsible:true},onValueChange(value){void value;}};
++const controlled:BoundAccordionProps={...base,selection:{kind:'single-controlled',value:'help',collapsible:true},onValueChange(value: string | null){void value;}};
+ export const example=<Accordion {...controlled} />;
+ export const multiple=<Accordion {...base} selection={{kind:'multiple-uncontrolled',defaultValue:['help']}} />;
+ // @ts-expect-error Controlled Accordion requires its owner callback.
