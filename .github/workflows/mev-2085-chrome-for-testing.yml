@@ -23,12 +23,18 @@ jobs:
           set -euo pipefail
           url='https://storage.googleapis.com/chrome-for-testing-public/144.0.7559.96/linux64/chrome-linux64.zip'
           curl --fail --location --retry 3 --silent --show-error "$url" -o chrome-linux64.zip
+          unzip -tq chrome-linux64.zip
           unzip -q chrome-linux64.zip
           test -x chrome-linux64/chrome
-          version="$(chrome-linux64/chrome --version)"
-          test "$version" = 'Google Chrome for Testing 144.0.7559.96'
           sha256sum chrome-linux64.zip > chrome-linux64.zip.sha256
-          printf '%s\n' "$version" > chrome-version.txt
+          set +e
+          version="$(chrome-linux64/chrome --version 2>&1)"
+          version_exit=$?
+          set -e
+          printf '%s\n' "$version" | tee chrome-version.txt
+          printf 'exit=%s\n' "$version_exit" | tee chrome-version-exit.txt
+          test "$version_exit" -eq 0
+          printf '%s' "$version" | grep -F '144.0.7559.96'
 
       - name: Upload verified public browser input
         uses: actions/upload-artifact@v4
@@ -38,5 +44,6 @@ jobs:
             chrome-linux64.zip
             chrome-linux64.zip.sha256
             chrome-version.txt
+            chrome-version-exit.txt
           retention-days: 1
           if-no-files-found: error
