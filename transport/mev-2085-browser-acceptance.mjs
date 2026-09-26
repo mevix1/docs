@@ -1,284 +1,92 @@
-import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 
-const targetUrl = process.env.TARGET_URL ?? "http://127.0.0.1:4173/";
-const evidenceDir = process.env.EVIDENCE_DIR ?? "evidence/mev-2085";
-mkdirSync(evidenceDir, { recursive: true });
+const url = process.env.TARGET_URL || 'http://127.0.0.1:4173/'
+const out = process.env.EVIDENCE_DIR || '/mnt/data/mev2085-evidence/browser'
+mkdirSync(out, { recursive: true })
+const chromePath = process.env.CHROME_PATH || spawnSync('bash',['-lc','command -v chromium || command -v google-chrome || command -v chromium-browser'],{encoding:'utf8'}).stdout.trim()
+if (!chromePath) throw new Error('Chromium not found')
+const profile = mkdtempSync(path.join(tmpdir(),'mev2085-chrome-'))
+const chrome = spawn(chromePath,[
+  '--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage',
+  '--remote-debugging-port=0',`--user-data-dir=${profile}`,'about:blank'
+],{stdio:['ignore','ignore','pipe']})
+let chromeErr=''; chrome.stderr.on('data',d=>chromeErr+=d)
 
-const chromePath = spawnSync(
-  "bash",
-  ["-lc", "command -v google-chrome || command -v chromium || command -v chromium-browser"],
-  { encoding: "utf8" },
-).stdout.trim();
-if (!chromePath) throw new Error("Chromium executable not found");
-
-const userDataDir = mkdtempSync(path.join(tmpdir(), "mev-2085-chrome-"));
-const chrome = spawn(
-  chromePath,
-  [
-    "--headless=new",
-    "--no-sandbox",
-    "--disable-gpu",
-    "--disable-dev-shm-usage",
-    "--remote-debugging-port=0",
-    `--user-data-dir=${userDataDir}`,
-    "about:blank",
-  ],
-  { stdio: ["ignore", "pipe", "pipe"] },
-);
-let chromeStderr = "";
-chrome.stderr.on("data", (chunk) => { chromeStderr += chunk.toString(); });
-
-async function waitForFile(file, timeoutMs = 15000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    try { return readFileSync(file, "utf8"); } catch { await sleep(100); }
-  }
-  throw new Error(`Timed out waiting for ${file}`);
+async function waitFile(p, ms=15000){const s=Date.now();while(Date.now()-s<ms){try{return readFileSync(p,'utf8')}catch{await sleep(100)}}throw new Error('timeout '+p)}
+class CDP{
+  constructor(ws){this.wsUrl=ws;this.id=1;this.pending=new Map();this.handlers=new Map()}
+  async open(){this.ws=new WebSocket(this.wsUrl);await new Promise((res,rej)=>{this.ws.addEventListener('open',res,{once:true});this.ws.addEventListener('error',rej,{once:true})});this.ws.addEventListener('message',e=>{const m=JSON.parse(e.data);if(m.id){const p=this.pending.get(m.id);if(!p)return;this.pending.delete(m.id);m.error?p.reject(new Error(JSON.stringify(m.error))):p.resolve(m.result||{})}else for(const h of this.handlers.get(m.method)||[])h(m.params||{})})}
+  send(method,params={}){const id=this.id++;return new Promise((resolve,reject)=>{this.pending.set(id,{resolve,reject});this.ws.send(JSON.stringify({id,method,params}))})}
+  on(method,h){const a=this.handlers.get(method)||[];a.push(h);this.handlers.set(method,a)}
+  close(){this.ws?.close()}
 }
+const cases=[], pageErrors=[], consoleErrors=[], failed=[], requests=[]
+const pass=(name,detail=true)=>cases.push({name,status:'PASS',detail})
+const check=(value,name,detail='')=>{if(!value)throw new Error(name+(detail?': '+JSON.stringify(detail):''));pass(name,detail||true)}
+let cdp
+try{
+  const [port]= (await waitFile(path.join(profile,'DevToolsActivePort'))).trim().split(/\r?\n/)
+  const target=await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`,{method:'PUT'}).then(async r=>{if(!r.ok)throw new Error('target '+r.status);return r.json()})
+  cdp=new CDP(target.webSocketDebuggerUrl);await cdp.open()
+  cdp.on('Runtime.exceptionThrown',p=>pageErrors.push(p.exceptionDetails?.text||'exception'))
+  cdp.on('Log.entryAdded',p=>{if(p.entry?.level==='error')consoleErrors.push(p.entry.text)})
+  cdp.on('Network.loadingFailed',p=>failed.push(p.errorText))
+  cdp.on('Network.requestWillBeSent',p=>requests.push(p.request.url))
+  await Promise.all(['Page.enable','Runtime.enable','Log.enable','Network.enable'].map(m=>cdp.send(m)))
+  const evaljs=async expression=>{const r=await cdp.send('Runtime.evaluate',{expression,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.text||'eval');return r.result?.value}
+  const wait=async(expr,ms=15000)=>{const s=Date.now();while(Date.now()-s<ms){if(await evaljs(expr))return;await sleep(100)}throw new Error('wait '+expr)}
+  const key=async(key,code,vk)=>{const down={type:'keyDown',key,code,windowsVirtualKeyCode:vk,nativeVirtualKeyCode:vk};if(key==='Enter'){down.text='\r';down.unmodifiedText='\r'}else if(key===' '){down.text=' ';down.unmodifiedText=' '}await cdp.send('Input.dispatchKeyEvent',down);await sleep(80);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key,code,windowsVirtualKeyCode:vk,nativeVirtualKeyCode:vk});await sleep(180)}
+  const button=t=>`Array.from(document.querySelectorAll('button')).find(n=>n.textContent.trim()===${JSON.stringify(t)})`
+  const summary=t=>`Array.from(document.querySelectorAll('summary')).find(n=>n.textContent.trim()===${JSON.stringify(t)})`
 
-class Cdp {
-  constructor(url) {
-    this.url = url;
-    this.nextId = 1;
-    this.pending = new Map();
-    this.listeners = new Map();
-  }
-  async open() {
-    this.ws = new WebSocket(this.url);
-    await new Promise((resolve, reject) => {
-      this.ws.addEventListener("open", resolve, { once: true });
-      this.ws.addEventListener("error", reject, { once: true });
-    });
-    this.ws.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id) {
-        const pending = this.pending.get(message.id);
-        if (!pending) return;
-        this.pending.delete(message.id);
-        if (message.error) pending.reject(new Error(JSON.stringify(message.error)));
-        else pending.resolve(message.result ?? {});
-        return;
-      }
-      const handlers = this.listeners.get(message.method) ?? [];
-      for (const handler of handlers) handler(message.params ?? {});
-    });
-  }
-  send(method, params = {}) {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  on(method, handler) {
-    const handlers = this.listeners.get(method) ?? [];
-    handlers.push(handler);
-    this.listeners.set(method, handlers);
-  }
-  close() { this.ws?.close(); }
-}
+  await cdp.send('Emulation.setDeviceMetricsOverride',{width:1280,height:900,deviceScaleFactor:1,mobile:false})
+  await cdp.send('Page.navigate',{url});await wait("document.readyState==='complete'&&!!document.querySelector('h1')");await sleep(400)
+  const initial=await evaljs(`(()=>({heading:document.querySelector('h1')?.textContent.trim(),body:document.body.innerText,diag:document.querySelector('.consumer-diagnostics')?.open,tech:document.querySelector('.consumer-technical')?.open,primary:${button('Проверить настройки')}?.getBoundingClientRect().top,diagTop:document.querySelector('.consumer-diagnostics')?.getBoundingClientRect().top,sw:document.documentElement.scrollWidth,iw:innerWidth}))()`)
+  check(initial.heading==='Настройки ресурсов','plain task heading',initial.heading)
+  check(!/Private package|MEV-\d+|Переключить pending|Переключить ошибку/i.test(initial.body),'no internal jargon on primary screen')
+  check(initial.diag===false&&initial.tech===false,'optional disclosures closed by default')
+  check(initial.primary<initial.diagTop,'primary flow precedes diagnostics')
+  check(initial.sw<=initial.iw,'wide no horizontal overflow',initial)
 
-const cases = [];
-const errors = [];
-const consoleErrors = [];
-const failedRequests = [];
-const requests = [];
-function pass(name, detail = true) { cases.push({ name, status: "PASS", detail }); }
-function assert(condition, name, detail = "") {
-  if (!condition) throw new Error(`${name}${detail ? `: ${detail}` : ""}`);
-  pass(name, detail || true);
-}
+  const before=await evaljs("document.querySelector('[role=checkbox]')?.getAttribute('aria-checked')")
+  await evaljs("document.querySelector('[role=checkbox]').focus()");await key(' ','Space',32)
+  const after=await evaljs("document.querySelector('[role=checkbox]')?.getAttribute('aria-checked')")
+  check(before!==after,'checkbox works by keyboard',`${before}->${after}`)
 
-let cdp;
-try {
-  const active = await waitForFile(path.join(userDataDir, "DevToolsActivePort"));
-  const [port] = active.trim().split(/\r?\n/);
-  const target = await fetch(
-    `http://127.0.0.1:${port}/json/new?${encodeURIComponent(targetUrl)}`,
-    { method: "PUT" },
-  ).then((response) => {
-    if (!response.ok) throw new Error(`CDP target creation failed: ${response.status}`);
-    return response.json();
-  });
-  cdp = new Cdp(target.webSocketDebuggerUrl);
-  await cdp.open();
-  cdp.on("Runtime.exceptionThrown", (event) => errors.push(event.exceptionDetails?.text ?? "exception"));
-  cdp.on("Log.entryAdded", (event) => {
-    if (event.entry?.level === "error") consoleErrors.push(event.entry.text);
-  });
-  cdp.on("Network.loadingFailed", (event) => failedRequests.push(event.errorText));
-  cdp.on("Network.requestWillBeSent", (event) => requests.push(event.request.url));
-  await Promise.all([
-    cdp.send("Page.enable"),
-    cdp.send("Runtime.enable"),
-    cdp.send("Log.enable"),
-    cdp.send("Network.enable"),
-  ]);
-  await cdp.send("Emulation.setDeviceMetricsOverride", {
-    width: 1280,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await cdp.send("Page.navigate", { url: targetUrl });
+  check((await evaljs("Array.from(document.querySelectorAll('[role=radio]')).filter(n=>n.getAttribute('aria-disabled')!=='true').length"))>=2,'enabled resource options present')
+  await evaljs("Array.from(document.querySelectorAll('[role=radio]')).find(n=>n.getAttribute('aria-disabled')!=='true').focus()");await key('ArrowDown','ArrowDown',40)
+  await wait("document.querySelector('.selection-summary')?.textContent.includes('Общая библиотека команды')");pass('radio changes by ArrowDown')
 
-  async function evaluate(expression) {
-    const result = await cdp.send("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text ?? "evaluation failed");
-    return result.result?.value;
-  }
-  async function waitFor(expression, timeoutMs = 15000) {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      if (await evaluate(expression)) return;
-      await sleep(100);
-    }
-    throw new Error(`Timed out: ${expression}`);
-  }
-  async function key(key, code, windowsVirtualKeyCode) {
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode });
-    await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode });
-    await sleep(100);
-  }
-  const findButton = (text) => `Array.from(document.querySelectorAll('button')).find((node) => node.textContent.trim() === ${JSON.stringify(text)})`;
-  const findSummary = (text) => `Array.from(document.querySelectorAll('summary')).find((node) => node.textContent.trim() === ${JSON.stringify(text)})`;
+  await evaljs(`${button('Проверить настройки')}.focus()`);await key('Enter','Enter',13)
+  await wait("document.querySelector('[role=status]')?.textContent.includes('Настройки проверены локально')");pass('primary action reports local success')
 
-  await waitFor("document.readyState === 'complete' && document.querySelector('h1')");
-  await sleep(300);
+  await evaljs(`${summary('Проверить дополнительные состояния')}.focus()`);await key('Enter','Enter',13)
+  check(await evaljs("document.querySelector('.consumer-diagnostics').open")===true,'diagnostics open by keyboard')
+  await evaljs(`${button('Удалить выбранный вариант')}.focus()`);await key('Enter','Enter',13)
+  await evaljs(`${button('Проверить настройки')}.focus()`);await key('Enter','Enter',13)
+  await wait("document.querySelector('[role=status]')?.textContent.includes('Не удалось проверить настройки')");pass('missing resource gives recoverable error')
 
-  const initial = await evaluate(`(() => ({
-    heading: document.querySelector('h1')?.textContent.trim(),
-    body: document.body.innerText,
-    diagnosticOpen: document.querySelector('.consumer-diagnostics')?.open,
-    technicalOpen: document.querySelector('.consumer-technical')?.open,
-    primaryTop: ${findButton("Проверить настройки")}?.getBoundingClientRect().top,
-    diagnosticTop: document.querySelector('.consumer-diagnostics')?.getBoundingClientRect().top,
-    scrollWidth: document.documentElement.scrollWidth,
-    innerWidth,
-  }))()`);
-  assert(initial.heading === "Настройки ресурсов", "task heading is plain and specific", initial.heading);
-  assert(!/Private package|MEV-\d+|Переключить pending|Переключить ошибку/i.test(initial.body), "internal jargon is absent from the primary screen");
-  assert(initial.diagnosticOpen === false && initial.technicalOpen === false, "optional disclosures are closed by default");
-  assert(initial.primaryTop < initial.diagnosticTop, "primary task precedes optional diagnostics");
-  assert(initial.scrollWidth <= initial.innerWidth, "wide layout has no horizontal overflow");
+  await evaljs(`${button('Сбросить изменения')}.focus()`);await key('Enter','Enter',13)
+  await wait("document.querySelector('.selection-summary')?.textContent.includes('Документы текущего проекта')")
+  check(await evaljs("document.querySelector('[role=status]')?.textContent.includes('Изменения ещё не проверены')")===true,'reset restores initial state')
 
-  const checkboxBefore = await evaluate("document.querySelector('[role=checkbox]')?.getAttribute('aria-checked')");
-  await evaluate("document.querySelector('[role=checkbox]').focus()");
-  await key(" ", "Space", 32);
-  const checkboxAfter = await evaluate("document.querySelector('[role=checkbox]')?.getAttribute('aria-checked')");
-  assert(checkboxBefore !== checkboxAfter, "checkbox changes from the keyboard", `${checkboxBefore} -> ${checkboxAfter}`);
+  await evaljs(`${summary('О комплекте и границах')}.focus()`);await key('Enter','Enter',13)
+  check(await evaljs("document.querySelector('.consumer-technical').open")===true,'technical details open by keyboard')
+  check(await evaljs("document.querySelector('.consumer-technical').innerText.includes('Серверное сохранение')")===true,'technical boundary available on demand')
 
-  const enabledRadios = await evaluate("Array.from(document.querySelectorAll('[role=radio]')).filter((node) => node.getAttribute('aria-disabled') !== 'true').length");
-  assert(enabledRadios >= 2, "two enabled resource options are present", enabledRadios);
-  await evaluate("Array.from(document.querySelectorAll('[role=radio]')).find((node) => node.getAttribute('aria-disabled') !== 'true').focus()");
-  await key("ArrowDown", "ArrowDown", 40);
-  await waitFor("document.querySelector('.selection-summary')?.textContent.includes('Общая библиотека команды')");
-  pass("radio selection changes with ArrowDown");
-
-  await evaluate(`${findButton("Проверить настройки")}.focus()`);
-  await key("Enter", "Enter", 13);
-  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Настройки проверены локально')");
-  pass("primary action has a clear local-success result");
-
-  await evaluate(`${findSummary("Проверить дополнительные состояния")}.focus()`);
-  await key("Enter", "Enter", 13);
-  assert(await evaluate("document.querySelector('.consumer-diagnostics')?.open") === true, "diagnostics open from the keyboard");
-  assert(await evaluate(`${findButton("Удалить выбранный вариант")} != null`) === true, "diagnostic controls are available only after disclosure");
-  await evaluate(`${findButton("Удалить выбранный вариант")}.focus()`);
-  await key("Enter", "Enter", 13);
-  await evaluate(`${findButton("Проверить настройки")}.focus()`);
-  await key("Enter", "Enter", 13);
-  await waitFor("document.querySelector('[role=status]')?.textContent.includes('Не удалось проверить настройки')");
-  pass("missing resource produces a clear recoverable error");
-
-  await evaluate(`${findButton("Сбросить изменения")}.focus()`);
-  await key("Enter", "Enter", 13);
-  await waitFor("document.querySelector('.selection-summary')?.textContent.includes('Документы текущего проекта')");
-  assert(await evaluate("document.querySelector('[role=status]')?.textContent.includes('Изменения ещё не проверены')") === true, "reset restores the initial local state");
-
-  await evaluate(`${findSummary("О комплекте и границах")}.focus()`);
-  await key("Enter", "Enter", 13);
-  assert(await evaluate("document.querySelector('.consumer-technical')?.open") === true, "technical provenance opens from the keyboard");
-  assert(await evaluate("document.querySelector('.consumer-technical')?.innerText.includes('Серверное сохранение')") === true, "technical boundary remains available on demand");
-
-  await cdp.send("Emulation.setDeviceMetricsOverride", {
-    width: 390,
-    height: 900,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await sleep(300);
-  const narrow = await evaluate(`(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    innerWidth,
-    clipped: Array.from(document.querySelectorAll('button, summary, [role=radio], [role=checkbox], [role=switch]')).filter((node) => {
-      const rect = node.getBoundingClientRect();
-      return rect.left < -0.5 || rect.right > innerWidth + 0.5;
-    }).map((node) => node.textContent?.trim() || node.getAttribute('role')),
-    focused: document.activeElement?.textContent?.trim() || document.activeElement?.getAttribute('role'),
-  }))()`);
-  assert(narrow.scrollWidth <= narrow.innerWidth, "390px layout has no horizontal overflow", `${narrow.scrollWidth}/${narrow.innerWidth}`);
-  assert(narrow.clipped.length === 0, "interactive controls remain inside the 390px viewport", narrow.clipped);
-
-  const screenshot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-  writeFileSync(path.join(evidenceDir, "consumer-390.png"), Buffer.from(screenshot.data, "base64"));
-
-  const version = await cdp.send("Browser.getVersion");
-  const external = requests.filter((url) => {
-    try {
-      const parsed = new URL(url);
-      return !["127.0.0.1", "localhost"].includes(parsed.hostname) && parsed.protocol !== "data:";
-    } catch { return true; }
-  });
-  assert(errors.length === 0, "no page exceptions", errors);
-  assert(consoleErrors.length === 0, "no console errors", consoleErrors);
-  assert(failedRequests.length === 0, "no failed network requests", failedRequests);
-  assert(external.length === 0, "no external browser requests", external);
-
-  const result = {
-    status: "PASS_MEV_2085_CONSUMER_BROWSER",
-    targetUrl,
-    browser: version.product,
-    cases,
-    pageErrors: errors,
-    consoleErrors,
-    failedRequests,
-    externalRequests: external,
-    boundaries: [
-      "local-only settings check",
-      "not backend persistence",
-      "not live ChatGPT",
-      "not live screen reader or IME",
-      "not physical mobile/device certification",
-      "not public registry release",
-    ],
-  };
-  writeFileSync(path.join(evidenceDir, "browser-result.json"), `${JSON.stringify(result, null, 2)}\n`);
-  console.log(JSON.stringify(result));
-} catch (error) {
-  const failure = {
-    status: "FAIL_MEV_2085_CONSUMER_BROWSER",
-    error: String(error?.stack ?? error),
-    cases,
-    pageErrors: errors,
-    consoleErrors,
-    failedRequests,
-    chromeStderr: chromeStderr.slice(-4000),
-  };
-  writeFileSync(path.join(evidenceDir, "browser-result.json"), `${JSON.stringify(failure, null, 2)}\n`);
-  console.error(JSON.stringify(failure));
-  process.exitCode = 1;
-} finally {
-  cdp?.close();
-  chrome.kill("SIGTERM");
-  await sleep(200);
-  rmSync(userDataDir, { recursive: true, force: true });
-}
+  await cdp.send('Emulation.setDeviceMetricsOverride',{width:390,height:900,deviceScaleFactor:1,mobile:false});await sleep(350)
+  const narrow=await evaljs(`(()=>({sw:document.documentElement.scrollWidth,iw:innerWidth,clipped:Array.from(document.querySelectorAll('button,summary,[role=radio],[role=checkbox],[role=switch]')).filter(n=>{const r=n.getBoundingClientRect();return r.left<-.5||r.right>innerWidth+.5}).map(n=>n.textContent?.trim()||n.getAttribute('role'))}))()`)
+  check(narrow.sw<=narrow.iw,'390px no horizontal overflow',narrow)
+  check(narrow.clipped.length===0,'390px interactive controls contained',narrow.clipped)
+  const shot=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});writeFileSync(path.join(out,'consumer-390.png'),Buffer.from(shot.data,'base64'))
+  const version=await cdp.send('Browser.getVersion')
+  const allowedHost=new URL(url).hostname;const external=requests.filter(u=>{try{const p=new URL(u);return p.hostname!==allowedHost&&p.protocol!=='data:'}catch{return true}})
+  check(pageErrors.length===0,'no page exceptions',pageErrors);check(consoleErrors.length===0,'no console errors',consoleErrors);check(failed.length===0,'no failed requests',failed);check(external.length===0,'no external requests',external)
+  const result={status:'PASS_MEV_2085_CONSUMER_BROWSER',url,browser:version.product,cases,pageErrors,consoleErrors,failedRequests:failed,externalRequests:external,boundaries:['local-only action','no backend persistence','not live ChatGPT','not screen-reader/IME certification','not physical device/mobile certification','not public registry release']}
+  writeFileSync(path.join(out,'browser-result.json'),JSON.stringify(result,null,2)+'\n');console.log(JSON.stringify(result))
+}catch(e){const result={status:'FAIL_MEV_2085_CONSUMER_BROWSER',error:String(e?.stack||e),cases,pageErrors,consoleErrors,failedRequests:failed,chromeStderr:chromeErr.slice(-4000)};writeFileSync(path.join(out,'browser-result.json'),JSON.stringify(result,null,2)+'\n');console.error(JSON.stringify(result));process.exitCode=1}
+finally{cdp?.close();chrome.kill('SIGTERM');await sleep(200);rmSync(profile,{recursive:true,force:true})}
