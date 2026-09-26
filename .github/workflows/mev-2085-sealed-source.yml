@@ -1,0 +1,52 @@
+name: MEV-2085 sealed-source key
+
+on:
+  push:
+    branches:
+      - transport/mev-2085-sealed-source-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  key-material:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout carrier
+        uses: actions/checkout@v4
+
+      - name: Restore branch-scoped private key
+        id: key-cache
+        uses: actions/cache@v4
+        with:
+          path: .mev2085-key/private.pem
+          key: mev2085-sealed-key-20260926-v1
+
+      - name: Generate private key once
+        if: steps.key-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .mev2085-key
+          umask 077
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out .mev2085-key/private.pem
+
+      - name: Export public key and fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl pkey -in .mev2085-key/private.pem -pubout -out mev2085-public.pem
+          openssl pkey -pubin -in mev2085-public.pem -outform DER | sha256sum | tee mev2085-public-key.sha256
+          test "$(stat -c '%a' .mev2085-key/private.pem)" = "600"
+
+      - name: Upload public key only
+        uses: actions/upload-artifact@v4
+        with:
+          name: MEV-2085-public-key
+          path: |
+            mev2085-public.pem
+            mev2085-public-key.sha256
+          retention-days: 1
+          if-no-files-found: error
