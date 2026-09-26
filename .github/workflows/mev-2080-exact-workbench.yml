@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      SOURCE_URL: "https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-c83c-8210-b54d-4baf9f0f4b55/raw?se=2026-09-26T17%3A59%3A50Z&sp=r&sv=2026-02-06&sr=b&scid=3fb403d5-b978-5d48-ad0e-59fa3e0ed365&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-26T10%3A15%3A59Z&ske=2026-09-27T10%3A15%3A59Z&sks=b&skv=2026-02-06&sig=/gUQc%2BTil3LSSG9HOExW33I2Qat3vr82ZzUXtWt7RU8%3D"
+      SOURCE_URL: "https://sdmntprdenmarkeast.oaiusercontent.com/files/00000000-2ae0-8210-9164-fe974b206237/raw?se=2026-09-26T18%3A06%3A02Z&sp=r&sv=2026-02-06&sr=b&scid=68d0f3c5-5df9-5f24-b09d-767f05bb3bd8&skoid=c30e7ce7-1f51-4051-a377-288cdba21c02&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-25T19%3A47%3A32Z&ske=2026-09-26T19%3A47%3A32Z&sks=b&skv=2026-02-06&sig=seLrl0pfXz8LOjW3d8kG74zU9ILhA8U4u1d5yNd/uaU%3D"
     steps:
       - name: Checkout execution carrier
         uses: actions/checkout@v4
@@ -24,15 +24,15 @@ jobs:
         with:
           node-version: 22.16.0
 
-      - name: Recover exact source
+      - name: Recover corrected exact source
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --location --silent --show-error "$SOURCE_URL" --output source.tar.xz
-          echo "f753ded0f8aed189e24366eabc30cc779677cd511ffb92144fdac23452dc1ccb  source.tar.xz" | sha256sum -c -
+          echo "9e32f7f9b4362b27c5844c31271b8ecd479263a18031940bea11786bc200e4f4  source.tar.xz" | sha256sum -c -
           mkdir source
           tar -xJf source.tar.xz -C source
-          test "$(sha256sum source/examples/workbench/src/main.tsx | cut -d' ' -f1)" = "0d34036438b73d252abdad6394986f85e29eb8aeba44ab213daf3381ddb409c7"
+          test "$(sha256sum source/examples/workbench/src/main.tsx | cut -d' ' -f1)" = "236f4a80b13f972c8f23d8506635971da8bb21442c84d528e2d3ec373e4ac224"
           test "$(sha256sum source/examples/workbench/src/workbench.css | cut -d' ' -f1)" = "0c2dfb7c378e2cff7eb2fc51fb9f4b6580bf57bd2e8c99bf278599a529936552"
           test "$(sha256sum source/examples/workbench/src/workbench-navigation.ts | cut -d' ' -f1)" = "6d0705391bf5536f138f6a4319d4464e95d1eb902293263fa1e917b2db4fe25e"
           test "$(sha256sum source/package-lock.json | cut -d' ' -f1)" = "058e79648f2a43f0d328d453a987fdde5044d943af11ad4898801b379760a943"
@@ -51,13 +51,14 @@ jobs:
               files[name]=hashlib.sha256(p.read_bytes()).hexdigest()
           digest=hashlib.sha256(json.dumps(files,sort_keys=True,separators=(',',':')).encode()).hexdigest()
           assert len(files)==342, len(files)
-          assert digest=='a24a5e798a0c432490ae8187f259a9c9296010b683febea2ee70cb34c4e85851', digest
+          assert digest=='1b5a7d020993a02546f5a9dc3f36f41f0f9eefb0e71ae6ec76c8a5fb3d0d6344', digest
           (root/'.mev2080-input-identity.json').write_text(json.dumps({
             'status':'PASS_EXACT_INPUTS','files':len(files),'source_roots_sha256':digest,
-            'commit':'4158bbdee74c1798a75700d8c1c54db7606f0411',
-            'tree':'f11638368dd1e055d6483bd4f7b7a16592c16332',
+            'commit':'867e1bfbb3aee998e59cf0bf8921064e80e0e4b1',
+            'tree':'8120d38a57e108490d5d9ad0c107176115da59ca',
             'parent':'79a3fc2966f3419355f39247a9b14874a311c21c',
-            'source_archive_sha256':'f753ded0f8aed189e24366eabc30cc779677cd511ffb92144fdac23452dc1ccb',
+            'source_archive_drive_id':'1gXc6G6ABENx-1F_Lwrsvqu-bHiKFmnMB',
+            'source_archive_sha256':'9e32f7f9b4362b27c5844c31271b8ecd479263a18031940bea11786bc200e4f4',
             'lock_sha256':'058e79648f2a43f0d328d453a987fdde5044d943af11ad4898801b379760a943'
           },indent=2)+'\n')
           PY
@@ -83,6 +84,8 @@ jobs:
           node --test tests/scaffold/workbench_navigation_test.mjs tests/scaffold/workbench_smoke_test.mjs | tee .build/mev2080/focused-tests.tap
           node --check tests/scaffold/workbench_navigation_test.mjs
           node --check tests/scaffold/workbench-smoke.mjs
+          test "$(grep -c '^ok ' .build/mev2080/focused-tests.tap)" = "17"
+          ! grep -Eq '^not ok |# fail [1-9]|# skipped [1-9]|# cancelled [1-9]|# todo [1-9]' .build/mev2080/focused-tests.tap
 
       - name: Build and strict typecheck
         working-directory: source
@@ -106,10 +109,16 @@ jobs:
           lines=Path('.build/mev2080/browser-result.json').read_text().splitlines()
           result=json.loads(lines[-1])
           assert result['status']=='PASS', result
-          assert 'optional view settings keyboard open' in result['cases']
-          assert 'primary catalog remains visible' in result['cases']
-          assert '390px view-settings containment' in result['cases']
-          assert 'candidate unchanged' in result['cases']
+          required={
+            'catalog before optional layers',
+            'optional technical details keyboard open and close',
+            'native quick-start keyboard open',
+            'optional view settings keyboard open',
+            'primary catalog remains visible',
+            '390px view-settings containment',
+            'candidate unchanged'
+          }
+          assert required.issubset(result['cases']), (required-set(result['cases']), result['cases'])
           PY
 
       - name: Assemble immutable evidence
@@ -132,8 +141,8 @@ jobs:
             'identity':identity,'browser':browser,
             'node':subprocess.check_output(['node','--version'],text=True).strip(),
             'npm':subprocess.check_output(['npm','--version'],text=True).strip(),
-            'focused_tests':'16/16 PASS',
-            'boundaries':['not live ChatGPT','not live screen reader','not physical device','not Figma parity']
+            'focused_tests':'17/17 PASS',
+            'boundaries':['not live ChatGPT','not live screen reader','not physical device','not Figma parity','not release approval']
           }
           (root/'MACHINE-RESULT.json').write_text(json.dumps(result,indent=2,ensure_ascii=False)+'\n')
           files={p.relative_to(root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*')) if p.is_file()}
